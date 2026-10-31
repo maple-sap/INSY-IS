@@ -1,0 +1,30 @@
+{
+  "name": "s.u.a.v.e-prototype",
+  "version": "1.0.0",
+  "description": "S.U.A.V.E. - Students United Activities & Venue Engine",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maple-sap/INSY-IS.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/maple-sap/INSY-IS/issues"
+  },
+  "homepage": "https://github.com/maple-sap/INSY-IS#readme",
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.9",
+    "express": "^5.3.0",
+    "multer": "^2.5.0",
+    "mysql2": "^3.24.6"
+  }
+}
