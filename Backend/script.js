@@ -1,5 +1,5 @@
 // ==========================================
-// S.U.A.V.E. - JAVASCRIPT APPLICATION LOGIC
+// S.U.A.V.E. - JS
 // ==========================================
 
 let currentDate = new Date(2026, 9, 1); // Starts at October 2026
@@ -753,7 +753,7 @@ async function saveSettings(event) {
     }
 }
 
-// Live UX Survey Calculation Handler
+// Live UX Survey Calculation
 function submitUXSurvey(event) {
     event.preventDefault();
     const q1 = parseInt(document.getElementById('surveyQ1').value);
@@ -885,7 +885,7 @@ async function submitProposal(event) {
     }
 }
 
-// QR Code Module
+// QR Code
 function triggerQRGeneration() {
     const urlInput = document.getElementById('formUrlInput').value.trim();
     if (!urlInput) {
@@ -912,7 +912,7 @@ function generateEventQRCode(containerId, formUrl) {
     }
 }
 
-// After-Event Compliance Module
+// After-Event Compliance
 function submitComplianceProof(event, proposalId) {
     event.preventDefault();
 

@@ -48,7 +48,7 @@ const db = mysql.createPool({
     database: process.env.DB_NAME || 'suave_db'
 });
 
-// 3. Get all event proposals / bookings
+// 3. Get all event proposals/bookings
 app.get('/api/proposals', async (req, res) => {
     try {
         const [rows] = await db.query('SELECT * FROM bookings ORDER BY event_date ASC');
