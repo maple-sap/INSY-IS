@@ -1,138 +1,165 @@
 const express = require('express');
-const mysql = require('mysql2');
-const multer = require('multer');
+const mysql = require('mysql2/promise');
+const cors = require('cors');
+const dotenv = require('dotenv');
 const path = require('path');
-const fs = require('fs');
+const multer = require('multer');
+
+dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-// Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static(path.join(__dirname)));
-app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
+app.use(cors());
 
-// Ensure uploads directory exists
-const uploadDir = path.join(__dirname, 'public/uploads');
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-// Multer Storage Configuration for File Uploads
+// Configure Multer storage for PDF proposal uploads
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        cb(null, uploadDir);
+        cb(null, __dirname); // Saves files in the Backend directory
     },
     filename: (req, file, cb) => {
-        cb(null, 'avatar-' + Date.now() + path.extname(file.originalname));
+        cb(null, Date.now() + '-' + file.originalname);
     }
 });
-const upload = multer({ storage: storage });
-
-// Database Connection (XAMPP MySQL default: suave_db, root, no password)
-const db = mysql.createConnection({
-    host: 'localhost',
-    user: 'root',
-    password: '',
-    database: 'suave_db'
-});
-
-db.connect((err) => {
-    if (err) {
-        console.error('Database connection failed:', err);
-        return;
+const upload = multer({
+    storage: storage,
+    fileFilter: (req, file, cb) => {
+        if (file.mimetype === 'application/pdf') {
+            cb(null, true);
+        } else {
+            cb(new Error('Only PDF files are allowed!'), false);
+        }
     }
-    console.log('Connected to MySQL suave_db database.');
 });
 
-// API: Login
-app.post('/api/login', (req, res) => {
-    const { email, password } = req.body;
-    const query = 'SELECT id, email, display_name AS displayName, role, avatar_url AS avatar FROM users WHERE email = ? AND password = ?';
-    db.query(query, [email, password], (err, results) => {
-        if (err) {
-            console.error('Login error:', err);
-            return res.status(500).json({ error: 'Database error during login' });
-        }
-        if (results.length === 0) return res.status(401).json({ error: 'Invalid email or password.' });
-        res.json({ success: true, user: results[0] });
-    });
+// 1. Serve static files (index.html, script.js, style.css, uploaded PDFs) from the Backend folder
+app.use(express.static(__dirname));
+
+// 2. Serve index.html explicitly at the root URL
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// API: Signup
-app.post('/api/signup', (req, res) => {
-    const { email, displayName, password, role } = req.body;
-    const query = 'INSERT INTO users (email, display_name, password, role) VALUES (?, ?, ?, ?)';
-    db.query(query, [email, displayName, password, role || 'student'], (err, result) => {
-        if (err) {
-            console.error('Signup error:', err);
-            if (err.code === 'ER_DUP_ENTRY') {
-                return res.status(400).json({ error: 'Email already registered.' });
-            }
-            return res.status(500).json({ error: 'Database error during registration.' });
-        }
-        res.json({ success: true, userId: result.insertId });
-    });
+// MySQL Database Connection Pool
+const db = mysql.createPool({
+    host: process.env.DB_HOST || 'localhost',
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'suave_db'
 });
 
-// API: Get Bookings / Proposals
-app.get('/api/proposals', (req, res) => {
-    const query = 'SELECT * FROM bookings ORDER BY event_date ASC';
-    db.query(query, (err, results) => {
-        if (err) {
-            console.error('Fetch bookings error:', err);
-            return res.status(500).json({ error: 'Failed to fetch bookings' });
-        }
-        res.json(results);
-    });
+// 3. Get all event proposals / bookings
+app.get('/api/proposals', async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT * FROM bookings ORDER BY event_date ASC');
+        res.json(rows);
+    } catch (err) {
+        console.error('Error fetching proposals:', err);
+        res.status(500).json({ error: 'Failed to fetch proposals from database.' });
+    }
 });
 
-// API: Create Booking / Proposal
-app.post('/api/proposals', (req, res) => {
+// 4. Submit a new event proposal with required PDF upload (Starts as Under Review - OSAS)
+app.post('/api/proposals', upload.single('pdfFile'), async (req, res) => {
     const { title, description, organizationName, eventDate, venue, resourcesNeeded, userId } = req.body;
-    const query = `INSERT INTO bookings (title, description, organization_name, event_date, venue, resources_needed, user_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'Under Review')`;
-    db.query(query, [title, description, organizationName, eventDate, venue, resourcesNeeded, userId || 1], (err, result) => {
-        if (err) {
-            console.error('Insert booking error:', err);
-            return res.status(500).json({ error: 'Failed to insert booking' });
-        }
-        res.json({ success: true, proposalId: result.insertId });
-    });
-});
+    const pdfFilename = req.file ? req.file.filename : null;
 
-// API: Update Settings & Avatar in Database
-app.post('/api/settings', upload.single('avatarFile'), (req, res) => {
-    const { userId, displayName } = req.body;
-    let avatarUrl = req.file ? `/uploads/${req.file.filename}` : null;
-
-    let query = 'UPDATE users SET display_name = ?';
-    let params = [displayName];
-
-    if (avatarUrl) {
-        query += ', avatar_url = ?';
-        params.push(avatarUrl);
+    if (!pdfFilename) {
+        return res.status(400).json({ error: 'A PDF proposal document is required.' });
     }
 
-    query += ' WHERE id = ?';
-    params.push(userId);
+    try {
+        const query = `
+            INSERT INTO bookings (title, description, organization_name, event_date, venue, resources_needed, user_id, proposal_file, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Under Review - OSAS')
+        `;
+        const [result] = await db.query(query, [
+            title,
+            description,
+            organizationName,
+            eventDate,
+            venue,
+            resourcesNeeded,
+            userId,
+            pdfFilename
+        ]);
 
-    db.query(query, params, (err, result) => {
-        if (err) {
-            console.error('Database update error:', err);
-            return res.status(500).json({ error: 'Database update failed' });
-        }
-
-        // Fetch updated user details from database
-        db.query('SELECT id, email, display_name AS displayName, role, avatar_url AS avatar FROM users WHERE id = ?', [userId], (err, rows) => {
-            if (err || rows.length === 0) {
-                return res.status(500).json({ error: 'Failed to fetch updated user' });
-            }
-            res.json({ success: true, user: rows[0] });
-        });
-    });
+        res.json({ success: true, proposalId: result.insertId });
+    } catch (err) {
+        console.error('Error creating proposal with file:', err);
+        res.status(500).json({ error: 'Failed to submit proposal.' });
+    }
 });
 
+// 5. Update proposal status (Approve / Reject) - Persists to MySQL Database
+app.put('/api/proposals/:id', async (req, res) => {
+    const proposalId = req.params.id;
+    const { status, rejectionReason } = req.body;
+
+    try {
+        const query = 'UPDATE bookings SET status = ?, rejection_reason = ? WHERE id = ?';
+        await db.query(query, [status, rejectionReason || '', proposalId]);
+
+        res.json({ success: true, message: 'Proposal status updated successfully in database.' });
+    } catch (err) {
+        console.error('Database update error:', err);
+        res.status(500).json({ error: 'Failed to update proposal status in database.' });
+    }
+});
+
+// 6. Login route
+app.post('/api/login', async (req, res) => {
+    const { email, password } = req.body;
+    try {
+        const [rows] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
+        if (rows.length === 0) {
+            return res.status(401).json({ error: 'Invalid credentials or user not found.' });
+        }
+        const user = rows[0];
+        res.json({
+            success: true,
+            user: {
+                id: user.id,
+                email: user.email,
+                displayName: user.display_name || user.displayName,
+                role: user.role,
+                avatar: user.avatar
+            }
+        });
+    } catch (err) {
+        console.error('Login error:', err);
+        res.status(500).json({ error: 'Login failed on server.' });
+    }
+});
+
+// 7. Signup route
+app.post('/api/signup', async (req, res) => {
+    const { email, displayName, password, role } = req.body;
+    try {
+        const [result] = await db.query(
+            'INSERT INTO users (email, display_name, password, role) VALUES (?, ?, ?, ?)',
+            [email, displayName, password, role]
+        );
+        res.json({ success: true, userId: result.insertId });
+    } catch (err) {
+        console.error('Signup error:', err);
+        res.status(500).json({ error: 'Registration failed.' });
+    }
+});
+
+// 8. Settings route
+app.post('/api/settings', async (req, res) => {
+    const { userId, displayName } = req.body;
+    try {
+        await db.query('UPDATE users SET display_name = ? WHERE id = ?', [displayName, userId]);
+        res.json({ success: true, user: { displayName } });
+    } catch (err) {
+        console.error('Settings error:', err);
+        res.status(500).json({ error: 'Failed to update settings.' });
+    }
+});
+
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`S.U.A.V.E. server running at http://localhost:${PORT}`);
+    console.log(`S.U.A.V.E. server running on port ${PORT}`);
 });

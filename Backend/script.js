@@ -110,7 +110,8 @@ async function fetchProposalsFromDB() {
                 complianceStatus: item.compliance_status || 'N/A',
                 cleanlinessProof: item.cleanliness_proof || null,
                 resourcesReturned: item.resources_returned === 1,
-                organizationName: item.organization_name
+                organizationName: item.organization_name,
+                proposalFile: item.proposal_file || null
             }));
             renderCalendar();
             renderProposalsTable();
@@ -162,7 +163,7 @@ function previewThemeChange(theme) {
     }
 }
 
-// View Switching Logic
+// View Switching Logic & Role-Based UI Adjustments
 function switchView(viewName, event) {
     if (event) event.preventDefault();
 
@@ -193,6 +194,23 @@ function switchView(viewName, event) {
     const titleEl = document.getElementById('current-view-title');
     if (titleEl && titles[viewName]) {
         titleEl.innerText = titles[viewName];
+    }
+
+    // Role-based visibility for Proposals tab (Admin vs Student)
+    if (viewName === 'proposals') {
+        const createCard = document.getElementById('createProposalCard');
+        const qrCard = document.getElementById('qrGeneratorCard');
+        const gridContainer = document.getElementById('proposalsGridContainer');
+
+        if (currentUser.role === 'admin' || currentUser.role === 'adviser') {
+            if (createCard) createCard.style.display = 'none';
+            if (qrCard) qrCard.style.display = 'none';
+            if (gridContainer) gridContainer.style.display = 'block'; // Full width for status table
+        } else {
+            if (createCard) createCard.style.display = 'block';
+            if (qrCard) qrCard.style.display = 'block';
+            if (gridContainer) gridContainer.style.display = ''; // Default grid layout
+        }
     }
 
     if (viewName === 'settings' && currentUser.email) {
@@ -261,20 +279,57 @@ function renderCalendar() {
         const formattedDay = String(day).padStart(2, '0');
         const dateKey = `${year}-${formattedMonth}-${formattedDay}`;
 
-        const matchedProposal = activeProposals.find(p => p.date === dateKey && p.status === "Approved");
-        if (matchedProposal) {
-            const badge = document.createElement('div');
-            badge.className = 'event-tag approved';
-            badge.innerText = `${matchedProposal.title} (${matchedProposal.venue})`;
-            badge.title = `${matchedProposal.title} at ${matchedProposal.venue}`;
-            cell.appendChild(badge);
+        const matchedProposals = activeProposals.filter(p => p.date === dateKey && p.status === "Approved");
+
+        if (matchedProposals.length > 0) {
+            cell.style.cursor = 'pointer';
+            cell.onclick = () => showEventDetails(dateKey, matchedProposals);
+
+            matchedProposals.forEach(matchedProposal => {
+                const badge = document.createElement('div');
+                badge.className = 'event-tag approved';
+                badge.innerText = `${matchedProposal.title} (${matchedProposal.venue})`;
+                badge.title = `Click to view details for ${matchedProposal.title}`;
+                cell.appendChild(badge);
+            });
         }
 
         container.appendChild(cell);
     }
 }
 
-// Render Proposals Table Dynamically
+// Display Approved Event Details in Popup Modal
+function showEventDetails(dateKey, proposals) {
+    const titleEl = document.getElementById('eventModalTitle');
+    const bodyEl = document.getElementById('eventModalBody');
+    if (!titleEl || !bodyEl) return;
+
+    titleEl.innerText = `Approved Events (${dateKey})`;
+
+    let html = '';
+    proposals.forEach((prop, index) => {
+        let pdfLinkHtml = '';
+        if (prop.proposalFile) {
+            pdfLinkHtml = `<span style="font-size: 0.85rem; color: var(--text-muted);">Proposal PDF:</span> <a href="/${prop.proposalFile}" target="_blank" style="color: var(--primary); text-decoration: underline;">View Uploaded Document</a><br>`;
+        }
+
+        html += `
+            <div style="margin-bottom: ${index < proposals.length - 1 ? '1rem' : '0'}; padding-bottom: ${index < proposals.length - 1 ? '1rem' : '0'}; border-bottom: ${index < proposals.length - 1 ? '1px solid var(--border-color)' : 'none'};">
+                <strong style="font-size: 1rem; color: var(--primary); display: block; margin-bottom: 4px;">${prop.title}</strong>
+                <span style="font-size: 0.85rem; color: var(--text-muted);">Organization:</span> <strong>${prop.organizationName || 'N/A'}</strong><br>
+                <span style="font-size: 0.85rem; color: var(--text-muted);">Venue:</span> <strong>${prop.venue}</strong><br>
+                ${prop.description ? `<span style="font-size: 0.85rem; color: var(--text-muted);">Description:</span> ${prop.description}<br>` : ''}
+                ${prop.resourcesNeeded ? `<span style="font-size: 0.85rem; color: var(--text-muted);">Resources Needed:</span> ${prop.resourcesNeeded}<br>` : ''}
+                ${pdfLinkHtml}
+            </div>
+        `;
+    });
+
+    bodyEl.innerHTML = html;
+    openModal('eventDetailsModal');
+}
+
+// Render Proposals Table Dynamically with Multi-Tier Approval Workflow & Legacy Fallback
 function renderProposalsTable() {
     const tbody = document.getElementById('proposalTableBody');
     if (!tbody) return;
@@ -284,17 +339,52 @@ function renderProposalsTable() {
         const tr = document.createElement('tr');
 
         let badgeClass = 'badge-pending';
-        if (prop.status === 'Approved') badgeClass = 'badge-approved';
-        else if (prop.status === 'Rejected') badgeClass = 'badge-rejected';
+        let statusDisplay = prop.status;
+
+        // Fallback for legacy database rows created before multi-tier workflow
+        let effectiveStatus = prop.status;
+        if (!effectiveStatus || effectiveStatus === 'Under Review' || effectiveStatus === 'Pending') {
+            effectiveStatus = 'Under Review - OSAS';
+        }
+
+        if (prop.status === 'Approved') {
+            badgeClass = 'badge-approved';
+            statusDisplay = 'Fully Approved';
+        } else if (prop.status === 'Rejected') {
+            badgeClass = 'badge-rejected';
+        } else if (effectiveStatus === 'Under Review - OSAS') {
+            statusDisplay = 'Awaiting OSAS Review';
+        } else if (effectiveStatus === 'Under Review - Adviser') {
+            statusDisplay = 'OSAS Approved / Awaiting Admin';
+        }
 
         let actionButtons = '';
-        if (prop.status === 'Under Review' && (currentUser.role === 'admin' || currentUser.role === 'adviser')) {
-            actionButtons = `
-        <div style="margin-top: 8px; display: flex; gap: 6px;">
-          <button class="btn" style="padding: 4px 10px; font-size: 0.75rem; background: var(--success); color: white; border: none; cursor: pointer;" onclick="updateProposalStatus(${prop.id}, 'Approved')">Approve</button>
-          <button class="btn" style="padding: 4px 10px; font-size: 0.75rem; background: var(--danger); color: white; border: none; cursor: pointer;" onclick="updateProposalStatus(${prop.id}, 'Rejected')">Reject</button>
-        </div>
-      `;
+
+        // Step 1: OSAS / Admin Approval Prerequisite
+        if (effectiveStatus === 'Under Review - OSAS') {
+            if (currentUser.role === 'admin') {
+                actionButtons = `
+                    <div style="margin-top: 8px; display: flex; gap: 6px;">
+                      <button class="btn" style="padding: 4px 10px; font-size: 0.75rem; background: var(--success); color: white; border: none; cursor: pointer;" onclick="updateProposalStatus(${prop.id}, 'Under Review - Adviser')">OSAS Approve</button>
+                      <button class="btn" style="padding: 4px 10px; font-size: 0.75rem; background: var(--danger); color: white; border: none; cursor: pointer;" onclick="updateProposalStatus(${prop.id}, 'Rejected')">Reject</button>
+                    </div>
+                `;
+            } else if (currentUser.role === 'adviser') {
+                actionButtons = `<br><small style="color: var(--warning); font-weight: 500;">Locked: Awaiting OSAS approval first.</small>`;
+            }
+        }
+        // Step 2: Second-Tier Admin Final Approval (Only accessible after OSAS approval)
+        else if (effectiveStatus === 'Under Review - Adviser') {
+            if (currentUser.role === 'adviser') {
+                actionButtons = `
+                    <div style="margin-top: 8px; display: flex; gap: 6px;">
+                      <button class="btn" style="padding: 4px 10px; font-size: 0.75rem; background: var(--success); color: white; border: none; cursor: pointer;" onclick="updateProposalStatus(${prop.id}, 'Approved')">Final Approve</button>
+                      <button class="btn" style="padding: 4px 10px; font-size: 0.75rem; background: var(--danger); color: white; border: none; cursor: pointer;" onclick="updateProposalStatus(${prop.id}, 'Rejected')">Reject</button>
+                    </div>
+                `;
+            } else if (currentUser.role === 'admin') {
+                actionButtons = `<br><small style="color: var(--primary); font-weight: 500;">OSAS Approved. Awaiting Admin.</small>`;
+            }
         }
 
         let reasonHtml = '';
@@ -302,24 +392,32 @@ function renderProposalsTable() {
             reasonHtml = `<br><small style="color:var(--danger); font-weight: 500;">Reason: "${prop.rejectionReason}"</small>`;
         }
 
+        let pdfFileLink = '';
+        if (prop.proposalFile) {
+            pdfFileLink = `<br><small><a href="/${prop.proposalFile}" target="_blank" style="color:var(--primary); text-decoration:underline;"><i data-lucide="file-text" style="width:12px; height:12px; vertical-align:middle;"></i> View PDF Proposal</a></small>`;
+        }
+
         tr.innerHTML = `
-      <td>
-        <strong>${prop.title}</strong><br>
-        <small style="color:var(--text-muted);">${prop.date} | ${prop.venue}</small>
-        ${prop.description ? `<br><small style="color:var(--text-muted); font-style:italic;">"${prop.description}"</small>` : ''}
-      </td>
-      <td>${prop.venue}</td>
-      <td>
-        <span class="badge ${badgeClass}">${prop.status}</span>
-        ${reasonHtml}
-        ${actionButtons}
-      </td>
-    `;
+          <td>
+            <strong>${prop.title}</strong><br>
+            <small style="color:var(--text-muted);">${prop.date} | ${prop.venue}</small>
+            ${prop.description ? `<br><small style="color:var(--text-muted); font-style:italic;">"${prop.description}"</small>` : ''}
+            ${pdfFileLink}
+          </td>
+          <td>${prop.venue}</td>
+          <td>
+            <span class="badge ${badgeClass}">${statusDisplay}</span>
+            ${reasonHtml}
+            ${actionButtons}
+          </td>
+        `;
         tbody.appendChild(tr);
     });
+    if (window.lucide) lucide.createIcons();
 }
 
-function updateProposalStatus(id, newStatus) {
+// Update Proposal Status (Approve / Reject triggers)
+async function updateProposalStatus(id, newStatus) {
     const proposal = activeProposals.find(p => p.id === id);
     if (!proposal) return;
 
@@ -328,29 +426,41 @@ function updateProposalStatus(id, newStatus) {
         document.getElementById('rejectReasonInput').value = '';
         openModal('rejectModal');
     } else {
-        proposal.rejectionReason = "";
-        proposal.status = newStatus;
-        showToast(`Proposal "${proposal.title}" has been successfully approved!`);
-        renderProposalsTable();
-        renderCalendar();
+        await saveProposalStatusToDB(id, newStatus, "");
     }
 }
 
-function handleRejectSubmit(event) {
+async function handleRejectSubmit(event) {
     event.preventDefault();
     const id = parseInt(document.getElementById('rejectProposalId').value);
     const reason = document.getElementById('rejectReasonInput').value.trim();
 
-    const proposal = activeProposals.find(p => p.id === id);
-    if (proposal) {
-        proposal.status = 'Rejected';
-        proposal.rejectionReason = reason;
-        showToast(`Proposal "${proposal.title}" has been rejected.`);
-    }
-
     closeModal('rejectModal');
-    renderProposalsTable();
-    renderCalendar();
+    await saveProposalStatusToDB(id, 'Rejected', reason);
+}
+
+// Helper function to persist status change to MySQL backend
+async function saveProposalStatusToDB(id, status, rejectionReason) {
+    try {
+        const response = await fetch(`/api/proposals/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status, rejectionReason })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            showToast(data.error || 'Failed to update status.', 'error');
+            return;
+        }
+
+        showToast(`Proposal status updated successfully!`);
+        fetchProposalsFromDB(); // Refreshes state and updates calendar/table from database
+    } catch (err) {
+        console.error('Network error updating proposal status:', err);
+        showToast('Server connection failed.', 'error');
+    }
 }
 
 // Modal Controls
@@ -470,7 +580,6 @@ async function handleSignup(event) {
 
         if (errorDiv) errorDiv.style.display = 'none';
 
-        // Automatically log user in upon successful signup
         currentUser = {
             id: data.userId,
             email,
@@ -511,12 +620,18 @@ function handleForgot(event) {
     emailInput.value = '';
 }
 
-// Update Header & Sidebar Footer for Logged In State
+// Update Header & Sidebar Footer with Correct Clean Role Badges (OSAS & Admin)
 function updateHeaderForLoggedIn() {
     const roleBadgeColors = {
         student: 'var(--primary)',
         adviser: 'var(--warning)',
         admin: 'var(--danger)'
+    };
+
+    const roleDisplayNames = {
+        student: 'Student Officer',
+        admin: 'OSAS',
+        adviser: 'Admin'
     };
 
     const appContainer = document.getElementById('appContainer');
@@ -537,7 +652,7 @@ function updateHeaderForLoggedIn() {
         <div style="text-align: left; line-height: 1.2;">
           <span style="font-size: 0.9rem; font-weight: 600; display: block;">${currentUser.displayName}</span>
           <span style="font-size: 0.7rem; padding: 1px 6px; border-radius: 10px; background: ${roleBadgeColors[currentUser.role] || 'var(--primary)'}; color: #ffffff; text-transform: uppercase; font-weight: 700; display: inline-block;">
-            ${currentUser.role}
+            ${roleDisplayNames[currentUser.role] || currentUser.role}
           </span>
         </div>
       </div>
@@ -549,7 +664,7 @@ function updateHeaderForLoggedIn() {
         sidebarFooter.style.display = 'block';
         document.getElementById('sidebarAvatarImg').src = currentUser.avatar;
         document.getElementById('sidebarFooterName').innerText = currentUser.displayName;
-        document.getElementById('sidebarFooterRole').innerText = currentUser.role;
+        document.getElementById('sidebarFooterRole').innerText = roleDisplayNames[currentUser.role] || currentUser.role;
     }
 
     if (window.lucide) {
@@ -654,25 +769,76 @@ function submitUXSurvey(event) {
     showToast("SUS score and metrics updated successfully!");
 }
 
-// Proposal / Booking Submission Connected to Database API
+// Dynamic Venue & Online Platform Visibility Handlers
+function handleVenueChange(selectElem) {
+    const onlineGroup = document.getElementById('onlinePlatformGroup');
+    const otherGroup = document.getElementById('onlineOtherGroup');
+    const platformSelect = document.getElementById('onlinePlatformSelect');
+    const otherInput = document.getElementById('onlineOtherInput');
+
+    if (selectElem.value === 'Online') {
+        onlineGroup.style.display = 'block';
+        platformSelect.required = true;
+    } else {
+        onlineGroup.style.display = 'none';
+        otherGroup.style.display = 'none';
+        platformSelect.required = false;
+        platformSelect.value = '';
+        otherInput.required = false;
+        otherInput.value = '';
+    }
+}
+
+function handlePlatformChange(selectElem) {
+    const otherGroup = document.getElementById('onlineOtherGroup');
+    const otherInput = document.getElementById('onlineOtherInput');
+
+    if (selectElem.value === 'Others') {
+        otherGroup.style.display = 'block';
+        otherInput.required = true;
+    } else {
+        otherGroup.style.display = 'none';
+        otherInput.required = false;
+        otherInput.value = '';
+    }
+}
+
+// Proposal / Booking Submission Connected to Database API with PDF Upload
 async function submitProposal(event) {
     event.preventDefault();
 
     const title = document.getElementById('propTitle').value.trim();
-    const organizationName = document.getElementById('propOrg').value.trim();
+    const organizationName = document.getElementById('propOrg').value;
     const description = document.getElementById('propDescription').value.trim();
     const eventDate = document.getElementById('propDate').value;
-    const venue = document.getElementById('propVenue').value;
+
+    let venue = document.getElementById('propVenue').value;
+    if (venue === 'Online') {
+        const platform = document.getElementById('onlinePlatformSelect').value;
+        if (platform === 'Others') {
+            const customPlatform = document.getElementById('onlineOtherInput').value.trim();
+            venue = `Online (${customPlatform})`;
+        } else {
+            venue = `Online (${platform})`;
+        }
+    }
+
     const resourcesNeeded = document.getElementById('propResources').value.trim();
+    const pdfFile = document.getElementById('propPdfFile').files[0];
     const conflictError = document.getElementById('conflictError');
+
+    if (!pdfFile) {
+        showToast("Please upload the required PDF proposal document.", "error");
+        return;
+    }
 
     const hasConflict = activeProposals.some(proposal =>
         proposal.date === eventDate &&
         proposal.venue === venue &&
-        (proposal.status === "Approved" || proposal.status === "Under Review")
+        (proposal.status === "Approved" || proposal.status === "Under Review - OSAS" || proposal.status === "Under Review - Adviser" || proposal.status === "Under Review")
     );
 
-    if (hasConflict) {
+    if (hasConflict && !venue.startsWith('Online')) {
         if (conflictError) conflictError.style.display = 'block';
         if (window.lucide) lucide.createIcons();
         showToast("Venue conflict detected!", "error");
@@ -681,19 +847,20 @@ async function submitProposal(event) {
 
     if (conflictError) conflictError.style.display = 'none';
 
+    const formData = new FormData();
+    formData.append('title', title);
+    formData.append('description', description);
+    formData.append('organizationName', organizationName);
+    formData.append('eventDate', eventDate);
+    formData.append('venue', venue);
+    formData.append('resourcesNeeded', resourcesNeeded);
+    formData.append('userId', currentUser.id || 1);
+    formData.append('pdfFile', pdfFile);
+
     try {
         const response = await fetch('/api/proposals', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                title,
-                description,
-                organizationName,
-                eventDate,
-                venue,
-                resourcesNeeded,
-                userId: currentUser.id || 1
-            })
+            body: formData
         });
 
         const data = await response.json();
@@ -705,11 +872,16 @@ async function submitProposal(event) {
 
         showToast(`Proposal "${title}" submitted successfully!`);
         const form = document.getElementById('proposalForm');
-        if (form) form.reset();
+        if (form) {
+            form.reset();
+            document.getElementById('onlinePlatformGroup').style.display = 'none';
+            document.getElementById('onlineOtherGroup').style.display = 'none';
+        }
 
         fetchProposalsFromDB();
     } catch (err) {
         console.error('Proposal submission network error:', err);
+        showToast('Server connection failed.', 'error');
     }
 }
 
