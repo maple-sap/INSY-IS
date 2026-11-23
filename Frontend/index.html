@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>S.U.A.V.E. - Students United Activities & Venue Engine</title>
     <link rel="stylesheet" href="style.css">
     <!-- Lucide Icons -->
@@ -23,9 +23,13 @@
                     <i data-lucide="menu"></i>
                 </button>
                 <div class="brand-logo">
-                    <i data-lucide="layers" style="color: var(--primary);"></i>
+                    <span class="brand-logo-mark" role="img" aria-label="S.U.A.V.E. logo"></span>
                     <span class="logo-text">S.U.A.V.E.</span>
                 </div>
+                <button class="icon-btn mobile-close-btn" onclick="toggleSidebar()" title="Close Navigation"
+                    style="margin-left: auto;">
+                    <i data-lucide="x"></i>
+                </button>
             </div>
             <ul class="sidebar-menu" style="flex: 1;">
                 <li class="active" data-tooltip="Event Calendar">
@@ -58,6 +62,12 @@
                         <span class="menu-label">Settings</span>
                     </a>
                 </li>
+                <li data-tooltip="About Us">
+                    <a href="#" onclick="switchView('about', event)">
+                        <i class="logo-icon" role="img" aria-label="About Us"></i>
+                        <span class="menu-label">About Us</span>
+                    </a>
+                </li>
             </ul>
 
             <!-- Sidebar Footer Profile & Relocated Logout -->
@@ -86,6 +96,9 @@
             <!-- Top Navbar -->
             <header>
                 <div class="header-left">
+                    <button class="icon-btn mobile-burger-btn" onclick="toggleSidebar()" title="Toggle Navigation Menu">
+                        <i data-lucide="menu"></i>
+                    </button>
                     <h2 id="current-view-title">Event Calendar</h2>
                 </div>
                 <div class="header-actions">
@@ -157,12 +170,27 @@
                                 <div class="form-group">
                                     <label>Event Description <span
                                             style="color: var(--text-muted); font-weight: normal; font-size: 0.85rem;">(Optional)</span></label>
-                                    <textarea class="form-control" id="propDescription" rows="2"
+                                    <textarea class="form-control" id="propDescription" rows="3"
                                         placeholder="Brief summary or objectives of the event..."></textarea>
                                 </div>
                                 <div class="form-group">
                                     <label>Event Date</label>
                                     <input type="date" class="form-control" id="propDate" required>
+                                </div>
+                                <div class="form-group">
+                                    <label>Event Time</label>
+                                    <div style="display: flex; gap: 10px;">
+                                        <div style="flex: 1; min-width: 0;">
+                                            <small style="color: var(--text-muted); font-size: 0.75rem;">Start
+                                                Time</small>
+                                            <input type="time" class="form-control" id="propStartTime" required>
+                                        </div>
+                                        <div style="flex: 1; min-width: 0;">
+                                            <small style="color: var(--text-muted); font-size: 0.75rem;">End
+                                                Time</small>
+                                            <input type="time" class="form-control" id="propEndTime" required>
+                                        </div>
+                                    </div>
                                 </div>
                                 <div class="form-group">
                                     <label>Requested Venue</label>
@@ -206,7 +234,7 @@
 
                                 <div class="form-group">
                                     <label>Resources Needed (Equipment / Facilities)</label>
-                                    <textarea class="form-control" id="propResources" rows="2"
+                                    <textarea class="form-control" id="propResources" rows="3"
                                         placeholder="e.g., Projector, Sound System, 50 Chairs"></textarea>
                                 </div>
 
@@ -215,7 +243,7 @@
                                     <i data-lucide="alert-circle"
                                         style="vertical-align: middle; width: 16px; height: 16px;"></i>
                                     <strong>Conflict Detected:</strong> This venue already has a pending or approved
-                                    request on the selected date.
+                                    request that overlaps the selected date and time.
                                 </div>
 
                                 <button type="submit" class="btn btn-primary" style="width: 100%;">Submit
@@ -229,7 +257,7 @@
                                 Reviews</h3>
                             <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">Review,
                                 approve, or reject pending submissions in sequence (OSAS review required first).</p>
-                            <table>
+                            <table class="proposal-table">
                                 <thead>
                                     <tr>
                                         <th>Event Details</th>
@@ -271,31 +299,92 @@
 
                 <!-- VIEW 3: COMPLIANCE & ARCHIVES -->
                 <div id="view-compliance" class="view-panel">
-                    <div class="card">
+                    <!-- Student: submit compliance -->
+                    <div class="card" id="complianceFormCard">
                         <h3><i data-lucide="check-square"></i> Post-Event Compliance & Venue Clearance</h3>
                         <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">Mandatory
-                            submission after your event concludes. Upload venue cleanliness proof and confirm returned
-                            equipment.</p>
-                        <form onsubmit="submitComplianceProof(event, 1)">
+                            submission after your event concludes. Upload venue cleanliness proof and report the
+                            condition of every borrowed item.</p>
+                        <form id="complianceForm" onsubmit="submitComplianceProof(event)">
+                            <div class="form-group">
+                                <label>Approved Event</label>
+                                <select class="form-control" id="complianceEventSelect" required
+                                    onchange="renderEquipmentChecklist()">
+                                    <option value="" disabled selected>Select your approved event</option>
+                                </select>
+                                <small id="complianceEventHint"
+                                    style="color: var(--text-muted); font-size: 0.75rem;"></small>
+                            </div>
+
+                            <div class="form-group" id="equipmentChecklistGroup" style="display: none;">
+                                <label>Equipment Return Checklist</label>
+                                <div id="equipmentChecklist"></div>
+                                <small style="color: var(--text-muted); font-size: 0.75rem;">Items come from the
+                                    resources you requested in your proposal. Set the condition of each one.</small>
+                            </div>
+
                             <div class="form-group">
                                 <label>Venue Cleanliness Photo Proof</label>
-                                <input type="file" class="form-control" id="proofFile_1" accept="image/*" required>
+                                <input type="file" class="form-control" id="proofFile"
+                                    accept="image/jpeg,image/png,image/webp,image/gif" required>
                                 <small style="color: var(--text-muted); font-size: 0.75rem;">Upload a clear photo
                                     showing the venue is tidy.</small>
                             </div>
+
+                            <div class="form-group">
+                                <label>Remarks <span
+                                        style="color: var(--text-muted); font-weight: normal; font-size: 0.85rem;">(Optional)</span></label>
+                                <textarea class="form-control" id="complianceRemarks" rows="3" maxlength="500"
+                                    placeholder="Report damaged or missing items, or anything OSAS should know..."></textarea>
+                            </div>
+
                             <div class="form-group"
                                 style="display: flex; align-items: center; gap: 10px; margin-top: 1rem;">
-                                <input type="checkbox" id="returnCheck_1" required
-                                    style="width: 18px; height: 18px; accent-color: var(--primary);">
-                                <label for="returnCheck_1"
+                                <input type="checkbox" id="returnCheck" required
+                                    onchange="updateComplianceSubmitState()"
+                                    style="width: 18px; height: 18px; flex-shrink: 0; accent-color: var(--primary);">
+                                <label for="returnCheck"
                                     style="margin-bottom: 0; font-size: 0.9rem; font-weight: 500; cursor: pointer;">
-                                    I certify that all borrowed property and equipment have been safely returned to the
-                                    property custodian.
+                                    I certify that the information above is accurate and that all borrowed property
+                                    and equipment have been returned to the property custodian, except any items I
+                                    reported as damaged or missing.
                                 </label>
                             </div>
-                            <button type="submit" class="btn btn-primary"
+                            <button type="submit" class="btn btn-primary" id="complianceSubmitBtn" disabled
                                 style="margin-top: 1.5rem; width: 100%;">Submit Compliance Requirements</button>
                         </form>
+                    </div>
+
+                    <!-- Student: status of their own submissions -->
+                    <div class="card" id="complianceMyCard" style="display: none;">
+                        <h3 style="margin-bottom: 1rem;"><i data-lucide="clipboard-list"></i> My Compliance Submissions
+                        </h3>
+                        <div id="complianceMyList"></div>
+                    </div>
+
+                    <!-- OSAS / Admin: review submitted compliance -->
+                    <div class="card" id="complianceReviewCard" style="display: none;">
+                        <h3 style="margin-bottom: 1rem;"><i data-lucide="clipboard-check"></i> Submitted Compliance
+                            Requirements</h3>
+                        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">Review the
+                            cleanliness photo and equipment checklist, then verify the submission as property
+                            custodian sign-off.</p>
+                        <div style="overflow-x: auto;">
+                            <table class="compliance-table">
+                                <thead>
+                                    <tr>
+                                        <th>Event Details</th>
+                                        <th>Submitted By</th>
+                                        <th>Equipment Checklist</th>
+                                        <th>Cleanliness Proof</th>
+                                        <th>Remarks</th>
+                                        <th>Verification</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="complianceTableBody">
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
 
@@ -309,53 +398,111 @@
                                 <h4>Functional Suitability</h4>
                                 <p id="functionalScoreDisplay"
                                     style="font-size: 1.8rem; font-weight: bold; color: var(--success2); margin-top: 8px;">
-                                    96.5%</p>
+                                    0%</p>
                                 <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 4px;">Verified
                                     across multi-stage routing & approval pipelines.</p>
+                                <p id="functionalResponseCount"
+                                    style="font-size: 0.8rem; color: var(--text-muted); margin-top: 6px;">Based on 0
+                                    responses</p>
                             </div>
                             <div style="background: var(--bg-tertiary); padding: 1.5rem; border-radius: var(--radius);">
                                 <h4>Usability Score (SUS)</h4>
                                 <p id="susScoreDisplay"
                                     style="font-size: 1.8rem; font-weight: bold; color: var(--primary2); margin-top: 8px;">
-                                    92.4 / 100</p>
+                                    0 / 100</p>
                                 <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 4px;">Evaluated via
                                     user feedback and survey responses.</p>
+                                <p id="susResponseCount"
+                                    style="font-size: 0.8rem; color: var(--text-muted); margin-top: 6px;">Based on 0
+                                    responses</p>
                             </div>
                         </div>
 
-                        <!-- Small UX Survey Section -->
+                        <!-- User Evaluation Survey (real responses stored in the database) -->
                         <div style="margin-top: 2rem; border-top: 1px solid var(--border-color); padding-top: 1.5rem;">
-                            <h4 style="margin-bottom: 0.5rem;"><i data-lucide="message-square"></i> Live User Experience
+                            <h4 style="margin-bottom: 0.5rem;"><i data-lucide="message-square"></i> User Evaluation
                                 Survey</h4>
-                            <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">Rate your
-                                experience below to dynamically update system acceptability metrics.</p>
-                            <form onsubmit="submitUXSurvey(event)">
-                                <div class="form-group" style="margin-bottom: 1rem;">
-                                    <label>1. How intuitive was the navigation and proposal workflow?</label>
-                                    <select class="form-control" id="surveyQ1" required>
-                                        <option value="5">Extremely Intuitive & Smooth</option>
-                                        <option value="4">Very Satisfactory</option>
-                                        <option value="3">Neutral / Average</option>
-                                        <option value="2">Somewhat Difficult</option>
-                                        <option value="1">Very Difficult</option>
-                                    </select>
-                                </div>
-                                <div class="form-group" style="margin-bottom: 1rem;">
-                                    <label>2. How reliable were the QR generation, date conflicts, and compliance
-                                        features?</label>
-                                    <select class="form-control" id="surveyQ2" required>
-                                        <option value="5">Flawless & Reliable</option>
-                                        <option value="4">Mostly Reliable</option>
-                                        <option value="3">Acceptable</option>
-                                        <option value="2">Needs Improvement</option>
-                                        <option value="1">Unreliable</option>
-                                    </select>
-                                </div>
-                                <button type="submit" class="btn btn-primary" style="width: 100%;">Submit Survey &
-                                    Recalculate Metrics</button>
+                            <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">Scores above
+                                are computed only from submitted responses. Each account can submit one response.</p>
+                            <p id="surveyGuestNote"
+                                style="display: none; font-size: 0.9rem; padding: 10px; border-radius: 6px; border: 1px solid var(--border-color); margin-bottom: 1rem;">
+                                Please log in to take the survey.</p>
+                            <p id="surveyDoneNote"
+                                style="display: none; font-size: 0.85rem; color: var(--success); margin-bottom: 1rem;">
+                                You already submitted a response. Submitting again will replace it.</p>
+                            <form id="surveyForm" onsubmit="submitUXSurvey(event)" style="display: none;">
+                                <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1rem;">Scale:
+                                    1 = Strongly Disagree, 5 = Strongly Agree</p>
+                                <div id="surveyQuestions"></div>
+                                <button type="submit" class="btn btn-primary" style="width: 100%;">Submit
+                                    Survey</button>
                             </form>
                         </div>
                     </div>
+                </div>
+
+                <!-- VIEW 6: ABOUT US -->
+                <div id="view-about" class="view-panel">
+                    <div class="card" style="text-align: center; padding: 2rem 1.5rem;">
+                        <span class="brand-logo-mark about-logo" role="img" aria-label="S.U.A.V.E. logo"></span>
+                        <h2 style="margin-top: 1rem; color: var(--primary); letter-spacing: -0.5px;">S.U.A.V.E.</h2>
+                        <p style="font-weight: 600; margin-top: 4px;">Students United Activities &amp; Venue Engine</p>
+                        <p style="max-width: 640px; margin: 1rem auto 0; color: var(--text-muted); line-height: 1.6;">
+                            S.U.A.V.E. is a web-based platform that helps student organizations propose events, reserve
+                            venues without schedule clashes, and get approvals in one place, from the first proposal to
+                            the post-event clearance.
+                        </p>
+                    </div>
+
+                    <div class="card">
+                        <h3 style="margin-bottom: 1rem;">What S.U.A.V.E. Does</h3>
+                        <div class="grid-2">
+                            <div
+                                style="background: var(--bg-tertiary); padding: 1.25rem; border-radius: var(--radius);">
+                                <h4>Event Proposals</h4>
+                                <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 6px;">Submit
+                                    proposals with the required PDF, preferred date, time and venue, then track their
+                                    status as they move through review.</p>
+                            </div>
+                            <div
+                                style="background: var(--bg-tertiary); padding: 1.25rem; border-radius: var(--radius);">
+                                <h4>Venue Conflict Detection</h4>
+                                <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 6px;">Requests that
+                                    overlap an existing booking for the same venue, date and time are flagged before
+                                    they are submitted.</p>
+                            </div>
+                            <div
+                                style="background: var(--bg-tertiary); padding: 1.25rem; border-radius: var(--radius);">
+                                <h4>Master Calendar &amp; QR Codes</h4>
+                                <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 6px;">Approved
+                                    events appear on a shared calendar, and registration forms can be shared through
+                                    generated QR codes.</p>
+                            </div>
+                            <div
+                                style="background: var(--bg-tertiary); padding: 1.25rem; border-radius: var(--radius);">
+                                <h4>Post-Event Compliance</h4>
+                                <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 6px;">Organizations
+                                    submit venue cleanliness photos and an equipment return checklist, which OSAS and
+                                    Admin verify.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h3 style="margin-bottom: 1rem;">How Approval Works</h3>
+                        <ol style="padding-left: 1.25rem; line-height: 1.8; color: var(--text-main);">
+                            <li>A student organization submits an event proposal with its PDF document.</li>
+                            <li>OSAS reviews the proposal and approves or rejects it with feedback.</li>
+                            <li>Once OSAS approves, Admin gives the final approval.</li>
+                            <li>The approved event is added to the master calendar.</li>
+                            <li>After the event, the organization submits compliance, and OSAS or Admin verifies it.
+                            </li>
+                        </ol>
+                    </div>
+
+                    <p style="text-align: center; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1rem;">
+                        S.U.A.V.E. v1.0.0 &middot; Prototype
+                    </p>
                 </div>
 
                 <!-- VIEW 5: SETTINGS -->
@@ -369,7 +516,8 @@
                                     style="width: 72px; height: 72px; border-radius: 50%; object-fit: cover; border: 2px solid var(--primary);">
                                 <div>
                                     <label style="margin-bottom: 4px;">Profile Photo</label>
-                                    <input type="file" class="form-control" id="settingsAvatarFile" accept="image/*"
+                                    <input type="file" class="form-control" id="settingsAvatarFile"
+                                        accept="image/jpeg,image/png,image/webp,image/gif"
                                         style="font-size: 0.85rem; padding: 6px;">
                                     <small style="color: var(--text-muted);">Upload a clear avatar image visible in the
                                         upper right corner.</small>
@@ -384,6 +532,13 @@
                                 <label>Institutional Email</label>
                                 <input type="email" class="form-control" id="settingsEmail" disabled
                                     style="opacity: 0.7; cursor: not-allowed;">
+                            </div>
+                            <div class="form-group">
+                                <label>Current Password <span
+                                        style="color: var(--text-muted); font-weight: normal; font-size: 0.85rem;">(Only
+                                        needed to change your password)</span></label>
+                                <input type="password" class="form-control" id="settingsCurrentPassword"
+                                    autocomplete="current-password" placeholder="••••••••">
                             </div>
                             <div class="form-group">
                                 <label>New Password <span
@@ -445,23 +600,35 @@
     <div class="modal-overlay" id="signupModal">
         <div class="modal-card">
             <button class="modal-close" onclick="closeModal('signupModal')">&times;</button>
-            <h3 style="margin-bottom: 1rem;">Create S.U.A.V.E. Account</h3>
+            <h3 style="margin-bottom: 0.5rem;">Create S.U.A.V.E. Account</h3>
+            <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1rem;">We'll email you a
+                verification link after you sign up. You'll need to confirm it before you can log in.</p>
             <form onsubmit="handleSignup(event)">
                 <div class="form-group">
                     <label>CvSU Institutional Email Address</label>
                     <input type="email" class="form-control" id="signupEmail" required
-                        placeholder="surname.firstname@cvsu.edu.ph">
+                        placeholder="firstname.surname@cvsu.edu.ph">
                     <div class="error-msg" id="signupError"
                         style="display:none; color:var(--danger); font-size:0.8rem; margin-top:4px;">Registration
                         requires a valid @cvsu.edu.ph email address.</div>
                 </div>
                 <div class="form-group">
                     <label>System Role</label>
-                    <select class="form-control" id="signupRole" required>
+                    <select class="form-control" id="signupRole" required onchange="toggleStaffCode()">
                         <option value="student" selected>Student Organization Officer</option>
                         <option value="admin">OSAS (Administrator)</option>
                         <option value="adviser">Admin</option>
                     </select>
+                </div>
+                <div class="form-group" id="signupOrgCodeGroup" style="display: none;">
+                    <label>Organization Access Code</label>
+                    <input type="password" class="form-control" id="signupOrgCode"
+                        placeholder="Provided by your organization adviser" autocomplete="off">
+                </div>
+                <div class="form-group" id="signupStaffCodeGroup" style="display: none;">
+                    <label>Staff Access Code</label>
+                    <input type="password" class="form-control" id="signupStaffCode"
+                        placeholder="Provided by the system administrator" autocomplete="off">
                 </div>
                 <div class="form-group">
                     <label>Password</label>
@@ -492,8 +659,61 @@
                         valid @cvsu.edu.ph email address.</div>
                 </div>
                 <div style="text-align: center;">
-                    <button type="submit" class="btn btn-primary" style="padding: 8px 56px; width: auto;">Send Recovery
+                    <button type="submit" class="btn btn-primary" id="forgotSubmitBtn"
+                        style="padding: 8px 56px; width: auto;">Send Recovery
                         Code</button>
+                </div>
+                <div style="text-align: center; margin-top: 1rem;">
+                    <a href="#" onclick="switchModal('forgotModal', 'resetPasswordModal')"
+                        style="font-size: 0.85rem; color: var(--primary); text-decoration: none;">Already have a
+                        recovery code?</a>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Reset Password Modal (Verify Code & Enter New Password) -->
+    <div class="modal-overlay" id="resetPasswordModal">
+        <div class="modal-card">
+            <button class="modal-close" onclick="closeModal('resetPasswordModal')">&times;</button>
+            <h3 style="margin-bottom: 0.5rem;">Create New Password</h3>
+            <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+                Enter the 6-digit recovery code sent to your email and your new password.
+            </p>
+            <form onsubmit="handleResetPassword(event)">
+                <div class="form-group">
+                    <label>CvSU Email Address</label>
+                    <input type="email" class="form-control" id="resetEmail" required
+                        placeholder="surname.firstname@cvsu.edu.ph">
+                </div>
+                <div class="form-group">
+                    <label>6-Digit Recovery Code</label>
+                    <input type="text" class="form-control" id="resetCode" maxlength="6" pattern="[0-9]{6}" required
+                        placeholder="123456" style="letter-spacing: 3px; font-weight: 600;">
+                </div>
+                <div class="form-group">
+                    <label>New Password</label>
+                    <input type="password" class="form-control" id="resetNewPassword" minlength="8" required
+                        placeholder="At least 8 characters">
+                </div>
+                <div class="form-group">
+                    <label>Confirm New Password</label>
+                    <input type="password" class="form-control" id="resetConfirmPassword" minlength="8" required
+                        placeholder="Confirm new password">
+                </div>
+                <div class="error-msg" id="resetPasswordError"
+                    style="display:none; color:var(--danger); font-size:0.8rem; margin-top:4px; margin-bottom:0.75rem;">
+                </div>
+                <div style="text-align: center;">
+                    <button type="submit" class="btn btn-primary" id="resetSubmitBtn"
+                        style="padding: 8px 56px; width: auto;">Set New Password</button>
+                </div>
+                <div style="text-align: center; margin-top: 1rem;">
+                    <a href="#" onclick="switchModal('resetPasswordModal', 'forgotModal')"
+                        style="font-size: 0.85rem; color: var(--text-muted); text-decoration: none;">Resend code</a>
+                    <span style="margin: 0 8px; color: var(--text-muted);">|</span>
+                    <a href="#" onclick="switchModal('resetPasswordModal', 'loginModal')"
+                        style="font-size: 0.85rem; color: var(--primary); text-decoration: none;">Back to Login</a>
                 </div>
             </form>
         </div>
@@ -510,6 +730,26 @@
             <div style="text-align: center;">
                 <button class="btn btn-primary" onclick="closeModal('eventDetailsModal')"
                     style="padding: 8px 56px; width: auto;">Exit</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirm Proposal Modal Popup -->
+    <div class="modal-overlay" id="confirmProposalModal">
+        <div class="modal-card">
+            <button class="modal-close" type="button" onclick="cancelProposalConfirmation()">&times;</button>
+            <h3 style="margin-bottom: 0.5rem;">Confirm Event Proposal</h3>
+            <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">Please review the details
+                below. Once confirmed, your proposal is sent to OSAS for review.</p>
+            <div id="confirmProposalBody" style="font-size: 0.9rem; max-height: 320px; overflow-y: auto;">
+                <!-- Populated dynamically via script.js -->
+            </div>
+            <div style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 1.5rem;">
+                <button type="button" class="btn" onclick="cancelProposalConfirmation()"
+                    style="padding: 8px 24px; width: auto;">Go Back &amp; Edit</button>
+                <button type="button" class="btn btn-primary" id="confirmProposalBtn"
+                    onclick="confirmProposalSubmission()" style="padding: 8px 24px; width: auto;">Confirm &amp;
+                    Submit</button>
             </div>
         </div>
     </div>
