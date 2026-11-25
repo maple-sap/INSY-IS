@@ -30,13 +30,15 @@ CREATE TABLE IF NOT EXISTS bookings (
     resources_needed TEXT NULL,
     proposal_file VARCHAR(255) NULL, -- Uploaded PDF proposal filename
     compliance_status VARCHAR(20) NOT NULL DEFAULT 'Pending', -- Pending, Submitted or Verified
-    cleanliness_proof VARCHAR(255) NULL, -- Uploaded venue cleanliness photo filename
+    cleanliness_proof VARCHAR(255) NULL, -- First uploaded venue cleanliness photo filename (also marks that compliance was submitted)
+    cleanliness_photos TEXT NULL, -- JSON list of all uploaded cleanliness photo filenames (up to 10)
     resources_returned TINYINT(1) NOT NULL DEFAULT 0, -- Student certified equipment returned
     compliance_submitted_at DATETIME NULL,
     equipment_checklist TEXT NULL, -- JSON list of {item, status: Returned/Damaged/Missing}
     compliance_remarks TEXT NULL, -- Student notes about damaged/missing items
     compliance_verified_by INT NULL, -- OSAS/Admin user who signed off
     compliance_verified_at DATETIME NULL,
+    compliance_rejection_reason TEXT NULL, -- OSAS/Admin feedback when compliance is rejected
     user_id INT NOT NULL, -- Links the booking to the user who created it
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE

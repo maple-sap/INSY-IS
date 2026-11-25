@@ -19,8 +19,37 @@ app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'same-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    // unpkg/cdnjs host the two CDN scripts the page loads (lucide, qrcodejs); 'unsafe-inline' is
+    // needed because the UI uses inline onclick="" handlers and inline style="" throughout.
+    res.setHeader(
+        'Content-Security-Policy',
+        "default-src 'self'; " +
+        "script-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com; " +
+        "style-src 'self' 'unsafe-inline'; " +
+        "img-src 'self' data: https://via.placeholder.com; " +
+        "font-src 'self'; " +
+        "connect-src 'self'; " +
+        "object-src 'none'; " +
+        "base-uri 'self'; " +
+        "frame-ancestors 'none'"
+    );
+    // Only sent once the site is actually served over HTTPS, otherwise browsers would remember
+    // this for a plain-HTTP localhost and make local development awkward.
+    if (process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production') {
+        res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
     next();
 });
+
+// VULN-08 fix: when this app sits behind a reverse proxy (Cloudflare Quick Tunnel, Nginx, a load
+// balancer), req.ip is the proxy's own address unless Express is told to trust the proxy's
+// X-Forwarded-For header. Without this, every visitor behind the same tunnel shares one rate-limit
+// bucket (a false DoS), or a spoofed header could bypass limits entirely if trust were assumed blindly.
+// TRUST_PROXY defaults to false: only turn it on when a proxy you control sits in front of this server.
+if (process.env.TRUST_PROXY === 'true') {
+    app.set('trust proxy', 1);
+}
 
 // Checks the file's actual bytes, not the mimetype header the browser claims (which anyone can fake)
 function fileStartsWith(filePath, signatures) {
@@ -67,7 +96,8 @@ const storage = multer.diskStorage({
     },
     filename: (req, file, cb) => {
         const safeName = path.basename(file.originalname).replace(/[^a-zA-Z0-9._-]/g, '_');
-        cb(null, Date.now() + '-' + safeName);
+        // Random part keeps several files uploaded in the same millisecond with the same name from overwriting each other
+        cb(null, Date.now() + '-' + crypto.randomBytes(4).toString('hex') + '-' + safeName.slice(-100));
     }
 });
 
@@ -94,6 +124,9 @@ const avatarUpload = multer({
         }
     }
 });
+
+// Most cleanliness photos a student can attach to one compliance submission (must match script.js)
+const MAX_COMPLIANCE_PHOTOS = 10;
 
 const complianceUpload = multer({
     storage: storage,
@@ -144,7 +177,10 @@ const db = mysql.createPool({
     host: process.env.DB_HOST || 'localhost',
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'suave_db'
+    database: process.env.DB_NAME || 'suave_db',
+    // Return DATE columns as plain 'YYYY-MM-DD' text. Otherwise they become JS Date objects at local
+    // midnight, and JSON converts them to UTC, which shifts the day back by one (e.g. Sept 11 -> Sept 10).
+    dateStrings: ['DATE']
 });
 
 // Self-healing schema check: makes an older suave_db match what this server expects.
@@ -196,12 +232,14 @@ async function ensureSchema() {
     await addIfMissing('bookings', 'resources_needed', 'TEXT NULL');
     await addIfMissing('bookings', 'proposal_file', 'VARCHAR(255) NULL');
     await addIfMissing('bookings', 'cleanliness_proof', 'VARCHAR(255) NULL');
+    await addIfMissing('bookings', 'cleanliness_photos', 'TEXT NULL'); // JSON list of up to 10 photo filenames (cleanliness_proof keeps the first one)
     await addIfMissing('bookings', 'resources_returned', 'TINYINT(1) NOT NULL DEFAULT 0');
     await addIfMissing('bookings', 'compliance_submitted_at', 'DATETIME NULL');
     await addIfMissing('bookings', 'equipment_checklist', 'TEXT NULL');
     await addIfMissing('bookings', 'compliance_remarks', 'TEXT NULL');
     await addIfMissing('bookings', 'compliance_verified_by', 'INT NULL');
     await addIfMissing('bookings', 'compliance_verified_at', 'DATETIME NULL');
+    await addIfMissing('bookings', 'compliance_rejection_reason', 'TEXT NULL');
     await addIfMissing('bookings', 'compliance_status', "VARCHAR(20) NOT NULL DEFAULT 'Pending'");
 
     // An older migration created compliance_status as ENUM('N/A','Pending','Complied'); the app writes 'Submitted'
@@ -436,6 +474,7 @@ const forgotByIp = createRateLimiter(10, 60 * 60 * 1000);     // 10 code request
 const resetByIp = createRateLimiter(20, 15 * 60 * 1000);      // 20 reset attempts per IP / 15 min
 const apiByIp = createRateLimiter(300, 15 * 60 * 1000);       // 300 API calls per IP / 15 min (generous; stops scripted abuse)
 const writeByIp = createRateLimiter(60, 15 * 60 * 1000);      // 60 write actions (POST/PUT/DELETE) per IP / 15 min
+const staffCodeByIp = createRateLimiter(5, 15 * 60 * 1000);   // 5 staff/org access-code guesses per IP / 15 min
 
 // Codes are stored as keyed hashes, never as plain text
 function hashRecoveryCode(email, code) {
@@ -476,6 +515,7 @@ setInterval(() => {
     resetByIp.sweep();
     apiByIp.sweep();
     writeByIp.sweep();
+    staffCodeByIp.sweep();
 }, 10 * 60 * 1000).unref();
 
 // Rate limiting for the whole API: a generous cap on all calls, a tighter one on writes
@@ -542,6 +582,32 @@ app.get('/uploads/:filename', async (req, res) => {
         return res.status(404).send('File not found.');
     }
 
+    // Being logged in is not, by itself, a reason to see every file: a proposal PDF or compliance
+    // photo for someone else's unapproved/rejected event is private to its owner and to staff.
+    // Profile avatars are not booking-specific, so they fall through and stay visible to any
+    // logged-in user (consistent with avatars being shown throughout the shared UI).
+    if (!STAFF_ROLES.includes(user.role)) {
+        try {
+            const [bookings] = await db.query(
+                'SELECT user_id, status FROM bookings WHERE proposal_file = ? OR cleanliness_proof = ? OR LOCATE(?, cleanliness_photos) > 0 LIMIT 1',
+                [filename, filename, `"${filename}"`]
+            );
+            const booking = bookings[0];
+            if (booking && booking.user_id !== user.id && booking.status !== 'Approved') {
+                return res.status(403).send('Access denied.');
+            }
+        } catch (err) {
+            console.error('Upload ownership check failed:', err.message);
+            return res.status(500).send('Could not verify access to this file.');
+        }
+    }
+
+    // Browsers render PDFs inline by default; a PDF can carry embedded actions/JavaScript, so
+    // uploaded proposal documents are forced to download rather than render in the page's origin.
+    if (filename.toLowerCase().endsWith('.pdf')) {
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+    }
+
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.sendFile(filename, { root: uploadsDir, dotfiles: 'allow' });
 });
@@ -551,7 +617,18 @@ app.get('/api/me', requireAuth, (req, res) => {
     res.json({ success: true, user: publicUser(req.user) });
 });
 
-app.post('/api/logout', (req, res) => {
+app.post('/api/logout', async (req, res) => {
+    // The JWT itself is stateless and would stay valid until it expires even after the cookie is
+    // cleared (e.g. if it was copied out of the browser). Bumping token_version invalidates it
+    // immediately, the same mechanism already used to revoke sessions on a password reset.
+    const payload = verifyToken(readCookie(req, SESSION_COOKIE));
+    if (payload && payload.sub) {
+        try {
+            await db.query('UPDATE users SET token_version = token_version + 1 WHERE id = ?', [payload.sub]);
+        } catch (err) {
+            console.error('Logout revocation error:', err.message);
+        }
+    }
     res.clearCookie(SESSION_COOKIE, COOKIE_OPTIONS);
     res.json({ success: true });
 });
@@ -571,13 +648,23 @@ app.get('/api/proposals', async (req, res) => {
             return res.json(publicRows);
         }
 
-        const [rows] = await db.query(`
+        // Staff (OSAS/Admin) need to review every booking, including ones still under review or
+        // rejected. A student should only see events that are public (Approved) or their own -
+        // otherwise every logged-in student could read every other org's pending/rejected
+        // proposals, rejection reasons, compliance remarks and uploaded filenames.
+        const isStaff = STAFF_ROLES.includes(req.user.role);
+        const baseQuery = `
             SELECT b.*, u.display_name AS submitted_by, v.display_name AS verified_by_name
             FROM bookings b
             LEFT JOIN users u ON u.id = b.user_id
-            LEFT JOIN users v ON v.id = b.compliance_verified_by
-            ORDER BY b.event_date ASC
-        `);
+            LEFT JOIN users v ON v.id = b.compliance_verified_by`;
+
+        const [rows] = isStaff
+            ? await db.query(`${baseQuery} ORDER BY b.event_date ASC`)
+            : await db.query(
+                `${baseQuery} WHERE b.status = 'Approved' OR b.user_id = ? ORDER BY b.event_date ASC`,
+                [req.user.id]
+            );
         res.json(rows);
     } catch (err) {
         console.error('Error fetching proposals:', err);
@@ -613,7 +700,8 @@ app.post('/api/proposals', requireAuth, upload.single('pdfFile'), verifyUploadCo
     const dateOnly = (daysFromToday) => {
         const d = new Date();
         d.setDate(d.getDate() + daysFromToday);
-        return d.toISOString().slice(0, 10);
+        // Local calendar date (toISOString would use UTC and can be a day off)
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     };
     const minDate = dateOnly(MIN_PROPOSAL_LEAD_DAYS);
     const maxDate = dateOnly(MAX_PROPOSAL_LEAD_DAYS);
@@ -726,16 +814,20 @@ function parseResourceItems(text) {
 
 // 5b. Student submits post-event compliance (photo + equipment checklist + remarks + certification)
 app.post('/api/compliance', requireAuth, (req, res) => {
-    complianceUpload.single('proofFile')(req, res, (uploadErr) => {
-        const removeUpload = () => { if (req.file) fs.unlink(req.file.path, () => { }); };
+    complianceUpload.array('proofFiles', MAX_COMPLIANCE_PHOTOS)(req, res, (uploadErr) => {
+        const files = req.files || [];
+        const removeUpload = () => files.forEach(f => fs.unlink(f.path, () => { }));
 
         if (uploadErr) {
-            return res.status(400).json({ error: uploadErr.message });
+            let message = uploadErr.message;
+            if (uploadErr.code === 'LIMIT_UNEXPECTED_FILE') message = `You can upload up to ${MAX_COMPLIANCE_PHOTOS} photos.`;
+            if (uploadErr.code === 'LIMIT_FILE_SIZE') message = 'Each photo must be 10 MB or smaller.';
+            return res.status(400).json({ error: message });
         }
 
-        if (req.file && !fileStartsWith(req.file.path, IMAGE_SIGNATURES)) {
-            fs.unlink(req.file.path, () => { });
-            return res.status(400).json({ error: 'That file is not a valid image.' });
+        if (files.some(f => !fileStartsWith(f.path, IMAGE_SIGNATURES))) {
+            removeUpload();
+            return res.status(400).json({ error: 'One of the files is not a valid image.' });
         }
 
         (async () => {
@@ -743,8 +835,8 @@ app.post('/api/compliance', requireAuth, (req, res) => {
             const userId = req.user.id;
             const remarks = String(req.body.remarks || '').trim().slice(0, 500);
 
-            if (!req.file) {
-                return res.status(400).json({ error: 'A venue cleanliness photo is required.' });
+            if (files.length === 0) {
+                return res.status(400).json({ error: 'At least one venue cleanliness photo is required.' });
             }
 
             if (certified !== 'true') {
@@ -761,7 +853,7 @@ app.post('/api/compliance', requireAuth, (req, res) => {
 
             try {
                 const [rows] = await db.query(
-                    'SELECT id, user_id, status, cleanliness_proof, resources_needed FROM bookings WHERE id = ?',
+                    'SELECT id, user_id, status, cleanliness_proof, cleanliness_photos, compliance_status, resources_needed FROM bookings WHERE id = ?',
                     [bookingId]
                 );
                 const booking = rows[0];
@@ -778,7 +870,8 @@ app.post('/api/compliance', requireAuth, (req, res) => {
                     removeUpload();
                     return res.status(400).json({ error: 'Compliance can only be submitted for approved events.' });
                 }
-                if (booking.cleanliness_proof) {
+                // A submission already exists: only allowed to replace it if OSAS/Admin rejected it
+                if (booking.cleanliness_proof && booking.compliance_status !== 'Rejected') {
                     removeUpload();
                     return res.status(409).json({ error: 'Compliance was already submitted for this event.' });
                 }
@@ -793,14 +886,27 @@ app.post('/api/compliance', requireAuth, (req, res) => {
 
                 const checklist = items.map((item, i) => ({ item, status: statuses[i] }));
                 const allReturned = checklist.every(c => c.status === 'Returned');
+                // Photos from the rejected attempt (only set when this is a resubmission)
+                let oldPhotos = [];
+                if (booking.cleanliness_proof) {
+                    try {
+                        const parsed = JSON.parse(booking.cleanliness_photos || '[]');
+                        oldPhotos = Array.isArray(parsed) ? parsed : [];
+                    } catch (e) { /* fall through to the single-file value */ }
+                    if (oldPhotos.length === 0) oldPhotos = [booking.cleanliness_proof];
+                }
 
                 await db.query(
                     `UPDATE bookings
-                 SET cleanliness_proof = ?, equipment_checklist = ?, compliance_remarks = ?,
-                     resources_returned = ?, compliance_status = 'Submitted', compliance_submitted_at = NOW()
+                 SET cleanliness_proof = ?, cleanliness_photos = ?, equipment_checklist = ?, compliance_remarks = ?,
+                     resources_returned = ?, compliance_status = 'Submitted', compliance_submitted_at = NOW(),
+                     compliance_rejection_reason = NULL, compliance_verified_by = NULL, compliance_verified_at = NULL
                  WHERE id = ?`,
-                    [req.file.filename, JSON.stringify(checklist), remarks, allReturned ? 1 : 0, bookingId]
+                    [files[0].filename, JSON.stringify(files.map(f => f.filename)), JSON.stringify(checklist), remarks, allReturned ? 1 : 0, bookingId]
                 );
+
+                // Clean up the photos from the rejected attempt now that they have been replaced
+                oldPhotos.forEach(name => fs.unlink(path.join(uploadsDir, path.basename(String(name))), () => { }));
 
                 res.json({ success: true });
             } catch (err) {
@@ -832,10 +938,14 @@ app.put('/api/compliance/:id/verify', requireRole(...STAFF_ROLES), async (req, r
         if (booking.compliance_status === 'Verified') {
             return res.status(409).json({ error: 'This submission is already verified.' });
         }
+        if (booking.compliance_status === 'Rejected') {
+            return res.status(409).json({ error: 'This submission was rejected. Waiting for the student to resubmit.' });
+        }
 
         await db.query(
             `UPDATE bookings
-             SET compliance_status = 'Verified', compliance_verified_by = ?, compliance_verified_at = NOW()
+             SET compliance_status = 'Verified', compliance_verified_by = ?, compliance_verified_at = NOW(),
+                 compliance_rejection_reason = NULL
              WHERE id = ?`,
             [req.user.id, bookingId]
         );
@@ -844,6 +954,47 @@ app.put('/api/compliance/:id/verify', requireRole(...STAFF_ROLES), async (req, r
     } catch (err) {
         console.error('Compliance verify error:', err);
         res.status(500).json({ error: 'Failed to verify compliance.' });
+    }
+});
+
+// 5d. OSAS / Admin rejects a compliance submission (e.g. unclear photo, wrong/missing equipment entries)
+app.put('/api/compliance/:id/reject', requireRole(...STAFF_ROLES), async (req, res) => {
+    const bookingId = req.params.id;
+    const reason = String(req.body.reason || '').trim().slice(0, 1000);
+
+    if (!reason) {
+        return res.status(400).json({ error: 'Please state what needs to be corrected.' });
+    }
+
+    try {
+        const [rows] = await db.query(
+            'SELECT id, cleanliness_proof, compliance_status FROM bookings WHERE id = ?',
+            [bookingId]
+        );
+        const booking = rows[0];
+
+        if (!booking) {
+            return res.status(404).json({ error: 'Event not found.' });
+        }
+        if (!booking.cleanliness_proof) {
+            return res.status(400).json({ error: 'No compliance submission to reject yet.' });
+        }
+        if (booking.compliance_status === 'Verified') {
+            return res.status(409).json({ error: 'This submission is already verified and can no longer be rejected.' });
+        }
+
+        await db.query(
+            `UPDATE bookings
+             SET compliance_status = 'Rejected', compliance_rejection_reason = ?,
+                 compliance_verified_by = ?, compliance_verified_at = NOW()
+             WHERE id = ?`,
+            [reason, req.user.id, bookingId]
+        );
+
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Compliance reject error:', err);
+        res.status(500).json({ error: 'Failed to reject compliance submission.' });
     }
 });
 
@@ -1016,10 +1167,24 @@ app.post('/api/signup', async (req, res) => {
         // ORG_SIGNUP_CODE is optional: leave it unset in .env to keep student signups open to anyone
         // with a valid @cvsu.edu.ph email, as before.
         const expected = process.env.ORG_SIGNUP_CODE || '';
-        if (expected !== '' && !codeMatches(orgCode, expected)) {
-            return res.status(403).json({ error: 'A valid organization access code is required to register.' });
+        if (expected !== '') {
+            const wait = staffCodeByIp.hit(req.ip);
+            if (wait > 0) {
+                return res.status(429).json({ error: `Too many attempts. Please try again in ${Math.ceil(wait / 60)} minute(s).` });
+            }
+            if (!codeMatches(orgCode, expected)) {
+                return res.status(403).json({ error: 'A valid organization access code is required to register.' });
+            }
         }
     } else {
+        // A shared static code is still just one secret away from granting OSAS/Admin to anyone who
+        // has it - this limiter only stops it from being brute-forced quickly; it does not replace
+        // keeping the code itself private, rotating it, or disabling self-signup for these roles
+        // entirely (leave STAFF_SIGNUP_CODE empty and promote accounts via SQL instead).
+        const wait = staffCodeByIp.hit(req.ip);
+        if (wait > 0) {
+            return res.status(429).json({ error: `Too many attempts. Please try again in ${Math.ceil(wait / 60)} minute(s).` });
+        }
         const expected = process.env.STAFF_SIGNUP_CODE || '';
         if (!STAFF_ROLES.includes(requestedRole) || !codeMatches(staffCode, expected)) {
             return res.status(403).json({ error: 'A valid staff access code is required to register as OSAS or Admin.' });

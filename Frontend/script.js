@@ -46,6 +46,8 @@ document.addEventListener("DOMContentLoaded", () => {
         document.documentElement.setAttribute('data-theme', newTheme);
     });
 
+    resetResourceRows();
+
     if (window.lucide) {
         lucide.createIcons();
     }
@@ -69,12 +71,13 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
 
-    // 2. Restore login session from localStorage if available
+    // 2. Read a cached session (if any) just to know a login MIGHT exist - do not act on it yet.
+    // The UI only switches to "logged in" once verifySession() below confirms it with the server,
+    // so a tampered or stale localStorage value never gets to render privileged controls.
     const savedUser = localStorage.getItem('suave_current_user');
     if (savedUser) {
         try {
-            currentUser = JSON.parse(savedUser);
-            updateHeaderForLoggedIn();
+            JSON.parse(savedUser); // validate it's not corrupt; the parsed value itself is unused here
         } catch (e) {
             console.error("Failed to parse saved session", e);
             localStorage.removeItem('suave_current_user');
@@ -223,9 +226,12 @@ async function fetchProposalsFromDB() {
                 maxParticipants: item.max_participants || 50,
                 currentRegistered: item.current_registered || 0,
                 complianceStatus: item.compliance_status || 'N/A',
+                complianceRejectionReason: item.compliance_rejection_reason || '',
                 cleanlinessProof: item.cleanliness_proof || null,
+                cleanlinessPhotos: parsePhotoList(item.cleanliness_photos, item.cleanliness_proof),
                 resourcesReturned: item.resources_returned === 1,
                 organizationName: item.organization_name,
+                resourcesNeeded: item.resources_needed || '',
                 proposalFile: item.proposal_file || null,
                 userId: item.user_id,
                 startTime: item.start_time ? String(item.start_time).slice(0, 5) : '',
@@ -349,6 +355,7 @@ function switchView(viewName, event) {
 
     if (viewName === 'proposals') {
         applyProposalDateLimits();
+        requestAnimationFrame(updateReadMoreButtons);
         const createCard = document.getElementById('createProposalCard');
         const qrCard = document.getElementById('qrGeneratorCard');
         const gridContainer = document.getElementById('proposalsGridContainer');
@@ -558,7 +565,7 @@ function renderProposalsTable() {
           <td>
             <strong>${escapeHtml(prop.title)}</strong><br>
             <small style="color:var(--text-muted);">${escapeHtml(prop.date)}${timeRange ? ' | ' + escapeHtml(timeRange) : ''} | ${escapeHtml(prop.venue)}</small>
-            ${prop.description ? `<br><small style="color:var(--text-muted); font-style:italic;">"${escapeHtml(prop.description)}"</small>` : ''}
+            ${prop.description ? `<div class="desc-wrap"><div class="desc-clamp${expandedDescriptions.has(String(prop.id)) ? ' expanded' : ''}" id="desc-${Number(prop.id)}">"${escapeHtml(prop.description)}"</div><button type="button" class="read-more-btn" id="descBtn-${Number(prop.id)}" onclick="toggleDescription(${Number(prop.id)})" style="display:none;">Read more</button></div>` : ''}
             ${pdfFileLink}
           </td>
           <td>${escapeHtml(prop.venue)}</td>
@@ -571,7 +578,43 @@ function renderProposalsTable() {
         tbody.appendChild(tr);
     });
     if (window.lucide) lucide.createIcons();
+    requestAnimationFrame(updateReadMoreButtons);
 }
+
+// ---- "Read more" for long proposal descriptions (shows 4 lines, rest hidden until expanded) ----
+const expandedDescriptions = new Set();
+
+// Shows the Read more button only for descriptions that are actually cut off.
+// Skipped while the Proposals tab is hidden (a hidden element has no measurable height).
+function updateReadMoreButtons() {
+    document.querySelectorAll('.desc-clamp').forEach(box => {
+        const id = box.id.replace('desc-', '');
+        const btn = document.getElementById('descBtn-' + id);
+        if (!btn) return;
+
+        if (box.classList.contains('expanded')) {
+            btn.style.display = 'inline-block';
+            btn.innerText = 'Show less';
+            return;
+        }
+        if (box.offsetParent === null) return;
+
+        btn.innerText = 'Read more';
+        btn.style.display = box.scrollHeight > box.clientHeight + 1 ? 'inline-block' : 'none';
+    });
+}
+
+function toggleDescription(id) {
+    const box = document.getElementById('desc-' + id);
+    if (!box) return;
+
+    const expanded = box.classList.toggle('expanded');
+    if (expanded) expandedDescriptions.add(String(id));
+    else expandedDescriptions.delete(String(id));
+    updateReadMoreButtons();
+}
+
+window.addEventListener('resize', () => requestAnimationFrame(updateReadMoreButtons));
 
 // Update Proposal Status (Approve / Reject triggers)
 async function updateProposalStatus(id, newStatus) {
@@ -1020,11 +1063,11 @@ function updateHeaderForLoggedIn() {
     if (actionContainer) {
         actionContainer.innerHTML = `
       <div style="display: flex; align-items: center; gap: 10px;">
-        <img id="headerAvatarImg" src="${currentUser.avatar}" alt="Avatar" style="width: 38px; height: 38px; border-radius: 50%; object-fit: cover; border: 2px solid var(--primary);">
+        <img id="headerAvatarImg" src="${encodeURI(currentUser.avatar)}" alt="Avatar" style="width: 38px; height: 38px; border-radius: 50%; object-fit: cover; border: 2px solid var(--primary);">
         <div style="text-align: left; line-height: 1.2;">
-          <span style="font-size: 0.9rem; font-weight: 600; display: block;">${currentUser.displayName}</span>
+          <span style="font-size: 0.9rem; font-weight: 600; display: block;">${escapeHtml(currentUser.displayName)}</span>
           <span style="font-size: 0.7rem; padding: 1px 6px; border-radius: 10px; background: ${roleBadgeColors[currentUser.role] || 'var(--primary)'}; color: #ffffff; text-transform: uppercase; font-weight: 700; display: inline-block;">
-            ${roleDisplayNames[currentUser.role] || currentUser.role}
+            ${escapeHtml(roleDisplayNames[currentUser.role] || currentUser.role)}
           </span>
         </div>
       </div>
@@ -1051,6 +1094,16 @@ function logout(silent) {
     currentUser = { email: "", displayName: "", role: "guest", avatar: "https://via.placeholder.com/80", id: null };
 
     localStorage.removeItem('suave_current_user');
+
+    // Empty the log-in form (and its error message) so the next person sees blank boxes
+    const loginForm = document.getElementById('loginEmail') && document.getElementById('loginEmail').closest('form');
+    if (loginForm) loginForm.reset();
+    ['loginEmail', 'loginPassword'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+    });
+    const loginErr = document.getElementById('loginError');
+    if (loginErr) loginErr.style.display = 'none';
 
     const appContainer = document.getElementById('appContainer');
     if (appContainer) {
@@ -1318,6 +1371,74 @@ function timesOverlap(aStart, aEnd, bStart, bEnd) {
     return aStart < bEnd && aEnd > bStart;
 }
 
+// ---- Resources Needed: Item + Quantity rows ----
+const DEFAULT_RESOURCE_ROWS = 2;
+
+function addResourceRow(removable) {
+    const container = document.getElementById('resourceRows');
+    if (!container) return;
+
+    const row = document.createElement('div');
+    row.className = 'resource-row';
+    row.innerHTML = `
+        <input type="text" class="form-control resource-item" maxlength="80" placeholder="e.g. Projector" aria-label="Item name">
+        <input type="number" class="form-control resource-qty" min="1" max="999" step="1" placeholder="Qty" aria-label="Quantity">
+        ${removable ? '<button type="button" class="resource-remove" title="Remove this row" aria-label="Remove this row">&times;</button>' : '<span class="resource-remove-spacer"></span>'}
+    `;
+    if (removable) {
+        row.querySelector('.resource-remove').onclick = () => row.remove();
+    }
+    container.appendChild(row);
+}
+
+// Back to the two empty starting rows (page load and after a successful submit)
+function resetResourceRows() {
+    const container = document.getElementById('resourceRows');
+    if (!container) return;
+    container.innerHTML = '';
+    for (let i = 0; i < DEFAULT_RESOURCE_ROWS; i++) addResourceRow(false);
+
+    const none = document.getElementById('noEquipmentCheck');
+    if (none) none.checked = false;
+    toggleNoEquipment();
+}
+
+// "No Equipment Needed" greys out and disables the rows and the + button
+function toggleNoEquipment() {
+    const none = document.getElementById('noEquipmentCheck');
+    const container = document.getElementById('resourceRows');
+    const addBtn = document.getElementById('addResourceBtn');
+    if (!none || !container) return;
+
+    container.classList.toggle('disabled', none.checked);
+    container.querySelectorAll('input, button').forEach(el => { el.disabled = none.checked; });
+    if (addBtn) addBtn.disabled = none.checked;
+}
+
+// Turns the rows into the text the server stores, e.g. "Projector (x2), Chairs (x50)".
+// Compliance splits this text on commas/semicolons/new lines, so those are removed from item names.
+function collectResources() {
+    const none = document.getElementById('noEquipmentCheck');
+    if (none && none.checked) return { text: '' };
+
+    const items = [];
+    for (const row of document.querySelectorAll('#resourceRows .resource-row')) {
+        const name = row.querySelector('.resource-item').value.replace(/[,;\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+        const qtyRaw = row.querySelector('.resource-qty').value.trim();
+        if (!name && !qtyRaw) continue; // untouched row
+
+        const qty = parseInt(qtyRaw, 10);
+        if (!name) return { error: 'Enter the item name for every quantity you filled in.' };
+        if (!Number.isInteger(qty) || qty < 1) return { error: `Enter a quantity (1 or more) for "${name}".` };
+        items.push(`${name} (x${Math.min(qty, 999)})`);
+    }
+
+    if (items.length === 0) {
+        return { error: 'List the items you need, or tick "No Equipment Needed".' };
+    }
+    return { text: items.join(', ') };
+}
+
 // Holds the validated proposal while the confirmation window is open
 let pendingProposal = null;
 
@@ -1330,7 +1451,8 @@ const MAX_PROPOSAL_LEAD_DAYS = 365;
 function dateInputValue(daysFromToday) {
     const d = new Date();
     d.setDate(d.getDate() + daysFromToday);
-    return d.toISOString().slice(0, 10);
+    // Local calendar date (toISOString would use UTC and can be a day off)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 // Keeps the date picker itself from offering out-of-range dates
@@ -1381,7 +1503,12 @@ function submitProposal(event) {
         }
     }
 
-    const resourcesNeeded = document.getElementById('propResources').value.trim();
+    const resources = collectResources();
+    if (resources.error) {
+        showToast(resources.error, "error");
+        return;
+    }
+    const resourcesNeeded = resources.text;
     const pdfFile = document.getElementById('propPdfFile').files[0];
     const conflictError = document.getElementById('conflictError');
 
@@ -1433,7 +1560,7 @@ function submitProposal(event) {
         ['Time', formatTimeRange(startTime, endTime)],
         ['Venue', venue],
         ['Description', description || '—'],
-        ['Resources', resourcesNeeded || '—'],
+        ['Resources', resourcesNeeded || 'No equipment needed'],
         ['Proposal PDF', pdfFile.name]
     ];
 
@@ -1496,6 +1623,7 @@ async function confirmProposalSubmission() {
             form.reset();
             document.getElementById('onlinePlatformGroup').style.display = 'none';
             document.getElementById('onlineOtherGroup').style.display = 'none';
+            resetResourceRows();
         }
 
         fetchProposalsFromDB();
@@ -1543,6 +1671,15 @@ function escapeHtml(value) {
 }
 
 // Shows the student form OR the OSAS/Admin review table, depending on the logged-in role
+// All cleanliness photos of a submission. Older submissions only have the single cleanliness_proof file.
+function parsePhotoList(raw, fallback) {
+    try {
+        const parsed = JSON.parse(raw || '[]');
+        if (Array.isArray(parsed) && parsed.length) return parsed.filter(n => typeof n === 'string');
+    } catch (e) { /* use the fallback */ }
+    return fallback ? [fallback] : [];
+}
+
 function parseChecklist(raw) {
     try {
         const parsed = JSON.parse(raw || '[]');
@@ -1606,7 +1743,10 @@ function renderComplianceTable() {
 
     tbody.innerHTML = submissions.map(p => {
         const submittedOn = p.complianceSubmittedAt ? new Date(p.complianceSubmittedAt).toLocaleString() : '—';
-        const proofUrl = `/uploads/${encodeURIComponent(p.cleanlinessProof)}`;
+        const photoUrls = (p.cleanlinessPhotos && p.cleanlinessPhotos.length ? p.cleanlinessPhotos : [p.cleanlinessProof])
+            .map(name => `/uploads/${encodeURIComponent(name)}`);
+        const proofHtml = `<div class="proof-grid">${photoUrls.map((url, i) => `<img src="${url}" alt="Cleanliness proof ${i + 1} for ${escapeHtml(p.title)}" class="proof-thumb" title="Click to enlarge" onclick="openProofGallery(${Number(p.id)}, ${i})">`).join('')}</div>
+              <small style="color: var(--text-muted);">${photoUrls.length} photo${photoUrls.length === 1 ? '' : 's'}</small>`;
 
         const checklistHtml = p.equipmentChecklist.length
             ? p.equipmentChecklist.map(entry => {
@@ -1616,12 +1756,23 @@ function renderComplianceTable() {
             }).join('')
             : '<small style="color: var(--text-muted);">No equipment requested</small>';
 
-        const verified = p.complianceStatus === 'Verified';
-        const verificationHtml = verified
-            ? `<span class="badge badge-approved">Verified</span><br>
-               <small style="color: var(--text-muted);">by ${escapeHtml(p.verifiedByName || 'staff')}<br>${escapeHtml(p.complianceVerifiedAt ? new Date(p.complianceVerifiedAt).toLocaleString() : '')}</small>`
-            : `<span class="badge badge-pending">Awaiting verification</span><br>
-               <button class="btn btn-primary" style="margin-top: 6px; padding: 4px 12px; width: auto; font-size: 0.8rem;" onclick="verifyCompliance(${Number(p.id)})">Verify</button>`;
+        const reviewedOn = p.complianceVerifiedAt ? new Date(p.complianceVerifiedAt).toLocaleString() : '';
+        let verificationHtml;
+        if (p.complianceStatus === 'Verified') {
+            verificationHtml = `<span class="badge badge-approved">Verified</span><br>
+               <small style="color: var(--text-muted);">by ${escapeHtml(p.verifiedByName || 'staff')}<br>${escapeHtml(reviewedOn)}</small>`;
+        } else if (p.complianceStatus === 'Rejected') {
+            verificationHtml = `<span class="badge badge-rejected">Rejected</span><br>
+               <small style="color: var(--text-muted);">by ${escapeHtml(p.verifiedByName || 'staff')}<br>${escapeHtml(reviewedOn)}</small>
+               ${p.complianceRejectionReason ? `<br><small style="color: var(--danger);">"${escapeHtml(p.complianceRejectionReason)}"</small>` : ''}
+               <br><small style="color: var(--text-muted);">Waiting for resubmission</small>`;
+        } else {
+            verificationHtml = `<span class="badge badge-pending">Awaiting verification</span><br>
+               <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px;">
+                 <button class="btn btn-primary" style="padding: 4px 12px; width: auto; font-size: 0.8rem;" onclick="verifyCompliance(${Number(p.id)})">Verify</button>
+                 <button class="btn" style="padding: 4px 12px; width: auto; font-size: 0.8rem; background-color: var(--danger); color: #fff; border: none;" onclick="openComplianceRejectModal(${Number(p.id)})">Reject</button>
+               </div>`;
+        }
 
         return `
           <tr>
@@ -1632,10 +1783,7 @@ function renderComplianceTable() {
             <td>${escapeHtml(p.submittedBy || 'Unknown')}<br><small style="color: var(--text-muted);">${escapeHtml(submittedOn)}</small></td>
             <td>${checklistHtml}</td>
             <td>
-              <a href="${proofUrl}" target="_blank" rel="noopener">
-                <img src="${proofUrl}" alt="Cleanliness proof for ${escapeHtml(p.title)}"
-                     style="width: 64px; height: 64px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border-color);">
-              </a>
+              ${proofHtml}
             </td>
             <td>${p.complianceRemarks ? escapeHtml(p.complianceRemarks) : '<small style="color: var(--text-muted);">—</small>'}</td>
             <td>${verificationHtml}</td>
@@ -1644,16 +1792,23 @@ function renderComplianceTable() {
 }
 
 // OSAS / Admin sign-off on a compliance submission
-async function verifyCompliance(bookingId) {
-    if (!confirm('Mark this compliance submission as verified?\n\nConfirm that you have checked the cleanliness photo and the equipment checklist.')) {
-        return;
-    }
+let pendingComplianceVerifyId = null;
+
+function verifyCompliance(bookingId) {
+    pendingComplianceVerifyId = bookingId;
+    openModal('complianceVerifyModal');
+}
+
+async function confirmComplianceVerification() {
+    const bookingId = pendingComplianceVerifyId;
+    pendingComplianceVerifyId = null;
+    closeModal('complianceVerifyModal');
+    if (bookingId == null) return;
 
     try {
         const response = await fetch(`/api/compliance/${bookingId}/verify`, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId: currentUser.id })
+            headers: { 'Content-Type': 'application/json' }
         });
         const data = await response.json();
 
@@ -1670,6 +1825,41 @@ async function verifyCompliance(bookingId) {
     }
 }
 
+// OSAS / Admin rejects a compliance submission so the organization can fix and resubmit it
+function openComplianceRejectModal(bookingId) {
+    document.getElementById('complianceRejectBookingId').value = bookingId;
+    document.getElementById('complianceRejectReasonInput').value = '';
+    openModal('complianceRejectModal');
+}
+
+async function handleComplianceRejectSubmit(event) {
+    event.preventDefault();
+    const bookingId = parseInt(document.getElementById('complianceRejectBookingId').value);
+    const reason = document.getElementById('complianceRejectReasonInput').value.trim();
+
+    closeModal('complianceRejectModal');
+
+    try {
+        const response = await fetch(`/api/compliance/${bookingId}/reject`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason })
+        });
+        const data = await response.json();
+
+        if (!response.ok) {
+            showToast(data.error || 'Failed to reject compliance submission.', 'error');
+            return;
+        }
+
+        showToast('Compliance submission rejected. The organization can now resubmit.');
+        await fetchProposalsFromDB();
+    } catch (err) {
+        console.error('Reject compliance error:', err);
+        showToast('Server connection failed.', 'error');
+    }
+}
+
 // Student dropdown: only their own approved events that have no compliance submission yet
 function populateComplianceEventSelect() {
     const select = document.getElementById('complianceEventSelect');
@@ -1679,7 +1869,7 @@ function populateComplianceEventSelect() {
     const previous = select.value;
     const eligible = activeProposals.filter(p =>
         p.status === 'Approved' &&
-        !p.cleanlinessProof &&
+        (!p.cleanlinessProof || p.complianceStatus === 'Rejected') &&
         currentUser.id != null &&
         String(p.userId) === String(currentUser.id)
     );
@@ -1761,14 +1951,18 @@ function renderMyComplianceList() {
     card.style.display = mine.length ? 'block' : 'none';
 
     list.innerHTML = mine.map(p => {
-        const verified = p.complianceStatus === 'Verified';
+        const statusLabel = { Verified: 'Verified', Rejected: 'Needs changes' }[p.complianceStatus] || 'Awaiting verification';
+        const badgeClass = { Verified: 'badge-approved', Rejected: 'badge-rejected' }[p.complianceStatus] || 'badge-pending';
         return `
-          <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border-color);">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border-color); flex-wrap: wrap;">
             <div style="min-width: 0; overflow-wrap: anywhere;">
               <strong>${escapeHtml(p.title)}</strong><br>
               <small style="color: var(--text-muted);">Submitted ${escapeHtml(p.complianceSubmittedAt ? new Date(p.complianceSubmittedAt).toLocaleString() : '')}</small>
+              ${p.complianceStatus === 'Rejected' && p.complianceRejectionReason
+                ? `<br><small style="color: var(--danger);">OSAS/Admin: "${escapeHtml(p.complianceRejectionReason)}" - please resubmit above.</small>`
+                : ''}
             </div>
-            <span class="badge ${verified ? 'badge-approved' : 'badge-pending'}" style="flex-shrink: 0;">${verified ? 'Verified' : 'Awaiting verification'}</span>
+            <span class="badge ${badgeClass}" style="flex-shrink: 0;">${statusLabel}</span>
           </div>`;
     }).join('');
 }
@@ -1780,11 +1974,112 @@ function updateComplianceSubmitState() {
     if (btn && checkbox) btn.disabled = !checkbox.checked;
 }
 
+// Most photos one compliance submission can have (must match MAX_COMPLIANCE_PHOTOS in server.js)
+const MAX_COMPLIANCE_PHOTOS = 10;
+const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+
+// Photos chosen for the compliance form. Kept in this list (not in the file box), so choosing or
+// dropping more photos ADDS to the selection instead of replacing it.
+let proofFilesList = [];
+const PROOF_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+
+function addProofFiles(fileList) {
+    let notImage = 0, tooBig = 0, duplicate = 0, overLimit = 0;
+
+    for (const file of Array.from(fileList || [])) {
+        if (!PROOF_IMAGE_TYPES.includes(file.type)) { notImage++; continue; }
+        if (file.size > MAX_PHOTO_BYTES) { tooBig++; continue; }
+        if (proofFilesList.some(f => f.name === file.name && f.size === file.size && f.lastModified === file.lastModified)) {
+            duplicate++;
+            continue;
+        }
+        if (proofFilesList.length >= MAX_COMPLIANCE_PHOTOS) { overLimit++; continue; }
+        proofFilesList.push(file);
+    }
+
+    renderProofPreviews();
+
+    const problems = [];
+    if (overLimit) problems.push(`Only ${MAX_COMPLIANCE_PHOTOS} photos are allowed, so ${overLimit} were not added.`);
+    if (notImage) problems.push(`${notImage} file${notImage === 1 ? ' is' : 's are'} not JPG, PNG, WEBP or GIF.`);
+    if (tooBig) problems.push(`${tooBig} photo${tooBig === 1 ? ' is' : 's are'} over 10 MB.`);
+    if (duplicate) problems.push(`${duplicate} duplicate${duplicate === 1 ? ' was' : 's were'} skipped.`);
+    if (problems.length) showToast(problems.join(' '), 'error');
+}
+
+function removeProofFile(index) {
+    proofFilesList.splice(index, 1);
+    renderProofPreviews();
+}
+
+function clearProofFiles() {
+    proofFilesList = [];
+    const input = document.getElementById('proofFile');
+    if (input) input.value = '';
+    renderProofPreviews();
+}
+
+function formatFileSize(bytes) {
+    return bytes >= 1024 * 1024
+        ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+        : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+// Shows each chosen photo as a row with just its file name (long names are cut with "...")
+function renderProofPreviews() {
+    const list = document.getElementById('proofPreviewGrid');
+    const hint = document.getElementById('proofFileHint');
+
+    if (list) {
+        list.innerHTML = proofFilesList.map((file, i) => `
+            <div class="proof-file">
+                <span class="proof-file-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span>
+                <small class="proof-file-size">${escapeHtml(formatFileSize(file.size))}</small>
+                <button type="button" onclick="removeProofFile(${i})" title="Remove this photo" aria-label="Remove ${escapeHtml(file.name)}">&times;</button>
+            </div>
+        `).join('');
+    }
+
+    if (hint) {
+        const n = proofFilesList.length;
+        hint.innerText = n === 0
+            ? 'No photos selected yet.'
+            : `${n} of ${MAX_COMPLIANCE_PHOTOS} photos selected.`;
+    }
+}
+
+// Photos picked with the "browse" dialog are added to the list, then the box is emptied
+// so the same photo can be picked again later if it was removed.
+function handleProofInputChange() {
+    const input = document.getElementById('proofFile');
+    if (!input) return;
+    addProofFiles(input.files);
+    input.value = '';
+}
+
+function handleProofDragOver(event) {
+    event.preventDefault();
+    const zone = document.getElementById('proofDropZone');
+    if (zone) zone.classList.add('dragover');
+}
+
+function handleProofDragLeave(event) {
+    event.preventDefault();
+    const zone = document.getElementById('proofDropZone');
+    if (zone) zone.classList.remove('dragover');
+}
+
+function handleProofDrop(event) {
+    event.preventDefault();
+    const zone = document.getElementById('proofDropZone');
+    if (zone) zone.classList.remove('dragover');
+    addProofFiles(event.dataTransfer ? event.dataTransfer.files : []);
+}
+
 async function submitComplianceProof(event) {
     event.preventDefault();
 
     const select = document.getElementById('complianceEventSelect');
-    const fileInput = document.getElementById('proofFile');
     const returnCheckbox = document.getElementById('returnCheck');
     const remarksInput = document.getElementById('complianceRemarks');
     const btn = document.getElementById('complianceSubmitBtn');
@@ -1806,8 +2101,13 @@ async function submitComplianceProof(event) {
         return;
     }
 
-    if (!fileInput || fileInput.files.length === 0) {
+    if (proofFilesList.length === 0) {
         showToast("Error: Upload venue cleanliness proof.", "error");
+        return;
+    }
+
+    if (proofFilesList.length > MAX_COMPLIANCE_PHOTOS) {
+        showToast(`You can upload up to ${MAX_COMPLIANCE_PHOTOS} photos.`, "error");
         return;
     }
 
@@ -1822,7 +2122,7 @@ async function submitComplianceProof(event) {
     formData.append('certified', 'true');
     formData.append('checklist', JSON.stringify(statuses));
     formData.append('remarks', remarksInput ? remarksInput.value.trim() : '');
-    formData.append('proofFile', fileInput.files[0]);
+    proofFilesList.forEach(file => formData.append('proofFiles', file));
 
     if (btn) btn.disabled = true;
 
@@ -1838,6 +2138,7 @@ async function submitComplianceProof(event) {
 
         showToast("Compliance documents submitted successfully!");
         document.getElementById('complianceForm').reset();
+        clearProofFiles();
         await fetchProposalsFromDB();
         updateComplianceSubmitState();
     } catch (err) {
@@ -1846,3 +2147,63 @@ async function submitComplianceProof(event) {
         updateComplianceSubmitState();
     }
 }
+
+// ---- Photo viewer popup (cleanliness proof opens in the page; arrows move between a submission's photos) ----
+let photoGallery = { urls: [], index: 0, title: '' };
+
+function openProofGallery(bookingId, index) {
+    const p = activeProposals.find(x => Number(x.id) === Number(bookingId));
+    if (!p) return;
+
+    const names = p.cleanlinessPhotos && p.cleanlinessPhotos.length ? p.cleanlinessPhotos : [p.cleanlinessProof];
+    photoGallery = {
+        urls: names.map(name => `/uploads/${encodeURIComponent(name)}`),
+        index: Math.max(0, Math.min(Number(index) || 0, names.length - 1)),
+        title: p.title
+    };
+    showGalleryPhoto();
+    openModal('photoViewerModal');
+}
+
+function showGalleryPhoto() {
+    const viewerImg = document.getElementById('photoViewerImg');
+    const caption = document.getElementById('photoViewerCaption');
+    const counter = document.getElementById('photoViewerCounter');
+    const prev = document.getElementById('photoPrevBtn');
+    const next = document.getElementById('photoNextBtn');
+    if (!viewerImg) return;
+
+    const total = photoGallery.urls.length;
+    viewerImg.src = photoGallery.urls[photoGallery.index] || '';
+    viewerImg.alt = `Cleanliness proof ${photoGallery.index + 1} of ${total}`;
+    if (caption) caption.innerText = photoGallery.title;
+    if (counter) counter.innerText = total > 1 ? `Photo ${photoGallery.index + 1} of ${total}` : '';
+    if (prev) prev.style.visibility = total > 1 ? 'visible' : 'hidden';
+    if (next) next.style.visibility = total > 1 ? 'visible' : 'hidden';
+}
+
+function stepPhotoViewer(delta) {
+    const total = photoGallery.urls.length;
+    if (total < 2) return;
+    photoGallery.index = (photoGallery.index + delta + total) % total;
+    showGalleryPhoto();
+}
+
+function closePhotoViewer() {
+    closeModal('photoViewerModal');
+    const viewerImg = document.getElementById('photoViewerImg');
+    if (viewerImg) viewerImg.removeAttribute('src');
+}
+
+// Escape closes the popup, the left/right arrow keys move between photos, and clicking the dark area closes it
+document.addEventListener('keydown', (e) => {
+    const modal = document.getElementById('photoViewerModal');
+    if (!modal || !modal.classList.contains('open')) return;
+
+    if (e.key === 'Escape') closePhotoViewer();
+    else if (e.key === 'ArrowLeft') stepPhotoViewer(-1);
+    else if (e.key === 'ArrowRight') stepPhotoViewer(1);
+});
+document.addEventListener('click', (e) => {
+    if (e.target && e.target.id === 'photoViewerModal') closePhotoViewer();
+});
