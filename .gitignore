@@ -1,4 +1,16 @@
+# Dependencies
 node_modules/
+
+# Environment variables (NEVER commit these)
 .env
-_env
-uploads/
+
+# Local uploads (won't persist on Render anyway)
+Backend/uploads/*
+!Backend/uploads/.gitkeep
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
